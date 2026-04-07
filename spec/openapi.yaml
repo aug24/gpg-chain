@@ -1,0 +1,82 @@
+openapi: "3.1.0"
+info:
+  title: GPG Chain
+  version: "0.1.0"
+  description: |
+    Distributed append-only ledger of GPG public keys with web-of-trust signing.
+    The server stores cryptographic material only. Trust decisions are always client-side.
+
+# Status: skeleton — complete during task SP05
+
+paths:
+  /blocks:
+    get:
+      summary: Return all blocks
+      # TODO
+
+  /block/{fingerprint}:
+    get:
+      summary: Get a single block with full sig chain
+      # TODO
+
+  /block:
+    post:
+      summary: Add a new key block (requires self-signature)
+      # TODO
+
+  /block/{fingerprint}/sign:
+    post:
+      summary: Append a trust signature
+      # TODO
+
+  /block/{fingerprint}/revoke:
+    post:
+      summary: Revoke a block (owner only)
+      # TODO
+
+  /search:
+    get:
+      summary: Search blocks by UID or email substring
+      # TODO
+
+  /.well-known/gpgchain.json:
+    get:
+      summary: Node metadata for cross-ledger discovery
+      # TODO
+
+  /peers:
+    get:
+      summary: List known peer URLs
+      # TODO
+    post:
+      summary: Register a new peer
+      # TODO
+
+  /p2p/hashes:
+    get:
+      summary: Return fingerprint->SigChainHead map for sync
+      # TODO
+
+  /p2p/block/{hash}:
+    get:
+      summary: Fetch a single block by its hash
+      # TODO
+
+  /p2p/block:
+    post:
+      summary: Receive a gossiped block
+      # TODO
+
+  /p2p/sign:
+    post:
+      summary: Receive a gossiped signature update
+      # TODO
+
+  /p2p/revoke:
+    post:
+      summary: Receive a gossiped revocation
+      # TODO
+
+components:
+  schemas:
+    # TODO: Block, SigEntry, ErrorResponse, etc.
