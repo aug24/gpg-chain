@@ -8,19 +8,29 @@ class MemoryStore:
         self._blocks: dict[str, Block] = {}
 
     def add(self, block: Block) -> None:
-        raise NotImplementedError
+        if block.fingerprint in self._blocks:
+            raise ValueError(f"Block already exists for fingerprint: {block.fingerprint}")
+        self._blocks[block.fingerprint] = block
 
     def get(self, fingerprint: str) -> Block | None:
-        raise NotImplementedError
+        return self._blocks.get(fingerprint)
 
     def all(self) -> list[Block]:
-        raise NotImplementedError
+        return list(self._blocks.values())
 
     def add_sig(self, fingerprint: str, entry: SigEntry) -> None:
-        raise NotImplementedError
+        block = self._blocks.get(fingerprint)
+        if block is None:
+            raise KeyError(f"No block found for fingerprint: {fingerprint}")
+        block.sig_entries.append(entry)
+        block.sig_chain_head = entry.hash
 
     def revoke(self, fingerprint: str, revocation_sig: str) -> None:
-        raise NotImplementedError
+        block = self._blocks.get(fingerprint)
+        if block is None:
+            raise KeyError(f"No block found for fingerprint: {fingerprint}")
+        block.revoked = True
+        block.revocation_sig = revocation_sig
 
     def hashes(self) -> dict[str, str]:
-        raise NotImplementedError
+        return {fp: block.sig_chain_head for fp, block in self._blocks.items()}

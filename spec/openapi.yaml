@@ -4,79 +4,859 @@ info:
   version: "0.1.0"
   description: |
     Distributed append-only ledger of GPG public keys with web-of-trust signing.
-    The server stores cryptographic material only. Trust decisions are always client-side.
 
-# Status: skeleton — complete during task SP05
+    The server stores cryptographic material only. Trust decisions are always client-side.
+    Nodes gossip new blocks, signatures, and revocations to peers. The /p2p/* endpoints
+    are used exclusively for inter-node communication.
+
+    All errors are returned as {"error": "..."} with an appropriate HTTP status code.
+    Fingerprints are uppercase hex with no spaces. All signatures are base64-encoded
+    detached binary OpenPGP signatures. Signing payloads are typed binary strings as
+    defined in spec/payloads.md.
 
 paths:
+
   /blocks:
     get:
-      summary: Return all blocks
-      # TODO
+      summary: List all blocks
+      description: |
+        Returns all blocks currently stored on this node, including their full sig chains.
+        Results are unordered. Revoked blocks are included (with revoked=true).
+      responses:
+        "200":
+          description: Array of all blocks on this node.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Block"
 
   /block/{fingerprint}:
     get:
-      summary: Get a single block with full sig chain
-      # TODO
+      summary: Get a single block by fingerprint
+      description: |
+        Returns the full block for the given fingerprint, including its complete sig chain
+        (all SigEntry records in order from oldest to newest) and revocation status.
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          description: Uppercase hex fingerprint of the key (40 chars for v4, 64 for v5).
+          schema:
+            type: string
+            pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+      responses:
+        "200":
+          description: The block and its full sig chain.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+        "404":
+          description: No block with that fingerprint exists on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /block:
     post:
-      summary: Add a new key block (requires self-signature)
-      # TODO
+      summary: Submit a new key block
+      description: |
+        Adds a new GPG public key to the ledger. The submitter must provide a self-signature
+        proving they control the corresponding private key.
+
+        The node:
+        1. Parses the armored_key and extracts the fingerprint and UIDs.
+        2. Enforces minimum key strength (RSA >= 2048 bit; Ed25519 accepted; DSA-1024 rejected).
+        3. Checks that at least one UID email domain matches the node's configured allowlist.
+        4. Extracts the submit_timestamp from the self_sig by verifying the SUBMIT payload.
+        5. Verifies the self_sig against the GPGCHAIN_SUBMIT_V1 payload.
+        6. Computes and stores the block hash.
+        7. Gossips the new block to K random peers.
+
+        The node does not accept a timestamp field from the client request; the timestamp
+        is extracted from the signed SUBMIT payload, which commits to it. The node stores
+        whatever timestamp the client embedded in the signed payload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddBlockRequest"
+      responses:
+        "201":
+          description: Block created and stored. Returns the full block as stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+        "400":
+          description: |
+            Invalid request. Possible reasons: malformed armored key, signature verification
+            failure, key strength below minimum, no UID found, invalid base64 in self_sig.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: |
+            The key's UID email domains do not match this node's configured domain allowlist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: A block with this fingerprint already exists on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /block/{fingerprint}/sign:
     post:
-      summary: Append a trust signature
-      # TODO
+      summary: Append a trust signature to a block
+      description: |
+        Appends a new SigEntry to the sig chain of the identified block. The signer may be
+        on-ledger (their block exists on this node) or off-ledger (they provide their armored
+        key inline).
+
+        The node:
+        1. Looks up the target block by fingerprint. Returns 404 if not found.
+        2. Returns 409 if the block is revoked.
+        3. Looks up the signer's key: from the local ledger if on-ledger, or from
+           signer_armored_key if off-ledger.
+        4. Enforces minimum key strength on the signer's key.
+        5. Verifies the sig against the GPGCHAIN_TRUST_V1 payload.
+        6. Returns 409 if this signer_fingerprint has already signed this block (duplicate signer).
+        7. Constructs and appends the SigEntry. Sets prev_hash to the current sig_chain_head
+           (or to the block's hash if this is the first signature). Computes and stores the
+           SigEntry hash.
+        8. Updates sig_chain_head on the block.
+        9. Gossips the new SigEntry to K random peers.
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          description: Fingerprint of the block being signed.
+          schema:
+            type: string
+            pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignBlockRequest"
+      responses:
+        "200":
+          description: SigEntry appended successfully. Returns the updated block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+        "400":
+          description: |
+            Invalid request. Possible reasons: signature verification failure, signer key
+            too weak, malformed signer_armored_key, signer_fingerprint does not match
+            signer_armored_key, invalid base64 in sig.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No block with that fingerprint exists on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: |
+            Either: this signer_fingerprint has already signed this block (duplicate signer),
+            or the target block is revoked and cannot receive new signatures.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /block/{fingerprint}/revoke:
     post:
       summary: Revoke a block (owner only)
-      # TODO
+      description: |
+        Permanently revokes a block. Only the key owner (the entity controlling the private
+        key in the block's armored_key) can revoke.
+
+        The node:
+        1. Looks up the block by fingerprint. Returns 404 if not found.
+        2. Returns 409 if already revoked.
+        3. Verifies the sig against the GPGCHAIN_REVOKE_V1 payload using the block's own key.
+        4. Returns 403 if verification fails (signature is not from the block's own key).
+        5. Sets revoked=true, stores revocation_sig, gossips the revocation to K peers.
+
+        Revocation is permanent and irreversible. A revoked block remains in the ledger
+        with revoked=true and will never accept new trust signatures.
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          description: Fingerprint of the block to revoke.
+          schema:
+            type: string
+            pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeBlockRequest"
+      responses:
+        "200":
+          description: Block revoked successfully. Returns the updated block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+        "400":
+          description: |
+            Invalid request. Possible reasons: malformed sig, invalid base64.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: |
+            The revocation signature does not verify against the block's own key. The caller
+            is not the key owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No block with that fingerprint exists on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: The block is already revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /search:
     get:
-      summary: Search blocks by UID or email substring
-      # TODO
+      summary: Search blocks by UID substring
+      description: |
+        Returns all blocks whose UIDs contain the query string as a case-insensitive substring.
+        The search is performed across all UID strings for each block.
+        Always returns HTTP 200. Returns an empty array if no blocks match.
+        Revoked blocks are included in results (clients filter based on revoked field if desired).
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Substring to search for within block UIDs (case-insensitive).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of matching blocks (may be empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Block"
 
   /.well-known/gpgchain.json:
     get:
       summary: Node metadata for cross-ledger discovery
-      # TODO
+      description: |
+        Returns metadata about this node for cross-ledger discovery. Clients use this to
+        discover which node holds keys for a given email domain, and to find peer nodes.
+        This endpoint is unauthenticated and publicly accessible.
+      responses:
+        "200":
+          description: Node metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WellKnownResponse"
 
   /peers:
     get:
       summary: List known peer URLs
-      # TODO
+      description: |
+        Returns the list of peer URLs this node currently knows about. Includes all peers
+        regardless of health status.
+      responses:
+        "200":
+          description: Array of peer URL strings.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                  format: uri
+                  example: "https://keys.partner.org"
+
     post:
       summary: Register a new peer
-      # TODO
+      description: |
+        Registers a new peer URL with this node. The node applies acceptance rules:
+        1. URL scheme must be http or https.
+        2. Host must not resolve to a private or loopback address.
+        3. Reciprocal reachability check: GET /peers on the claimed URL must return 200.
+        4. Peer list must not be at capacity (default max 50).
+        5. Duplicate URLs are silently accepted (return 200, not added twice).
+
+        On success, the receiving node also attempts to register itself with the new peer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPeerRequest"
+      responses:
+        "200":
+          description: Peer registered (or already present).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "400":
+          description: |
+            Invalid URL, disallowed URL scheme, private/loopback address, or reciprocal
+            reachability check failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Peer list is at capacity. No new peers can be added.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /p2p/hashes:
     get:
-      summary: Return fingerprint->SigChainHead map for sync
-      # TODO
+      summary: Return fingerprint-to-sig_chain_head map for sync
+      description: |
+        Returns a JSON object mapping each stored fingerprint to its current sig_chain_head.
+        Used by peers during sync and cross-validation to diff their ledger state.
+        An empty string value means the block has no trust signatures yet.
+      responses:
+        "200":
+          description: Map of fingerprint to sig_chain_head for all stored blocks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HashesResponse"
 
   /p2p/block/{hash}:
     get:
-      summary: Fetch a single block by its hash
-      # TODO
+      summary: Fetch a single block by its content hash
+      description: |
+        Returns the full block identified by its content hash (not its fingerprint). Used
+        by peers during sync to fetch a specific block they know the hash of.
+        Returns the block with its complete sig chain.
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: The content hash of the block (64-char uppercase hex SHA-256).
+          schema:
+            type: string
+            pattern: "^[A-F0-9]{64}$"
+      responses:
+        "200":
+          description: The full block.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+        "404":
+          description: No block with that hash exists on this node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /p2p/block:
     post:
-      summary: Receive a gossiped block
-      # TODO
+      summary: Receive a gossiped block from a peer
+      description: |
+        Accepts a block gossiped by a peer. Applies the same validation as POST /block:
+        self-sig verification, hash verification, key strength, domain allowlist.
+        If valid and not already seen, stores the block and gossips it to K more peers.
+        If already seen, returns 200 without re-storing or re-gossiping.
+        If invalid, returns 400 and does not store or forward.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GossipBlockRequest"
+      responses:
+        "200":
+          description: Block accepted (or already known). Stored and gossiped if new.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "400":
+          description: |
+            Invalid block. Validation failed: bad signature, hash mismatch, weak key,
+            domain not allowed, or malformed data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /p2p/sign:
     post:
-      summary: Receive a gossiped signature update
-      # TODO
+      summary: Receive a gossiped trust signature from a peer
+      description: |
+        Accepts a SigEntry gossiped by a peer. Applies full validation: SigEntry hash
+        verification, signature verification against TRUST payload, prev_hash link check.
+        The target block must already exist on this node.
+        If valid and not already seen, stores the SigEntry and gossips it to K more peers.
+        If already seen, returns 200 without re-storing or re-gossiping.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GossipSignRequest"
+      responses:
+        "200":
+          description: SigEntry accepted (or already known).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "400":
+          description: |
+            Invalid SigEntry: hash mismatch, signature verification failure, missing target
+            block, malformed data, or duplicate signer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /p2p/revoke:
     post:
-      summary: Receive a gossiped revocation
-      # TODO
+      summary: Receive a gossiped revocation from a peer
+      description: |
+        Accepts a revocation gossiped by a peer. The target block must exist on this node.
+        Verifies the revocation_sig against the REVOKE payload using the block's own key.
+        If valid and not already seen, marks the block as revoked and gossips to K more peers.
+        If already seen (block already revoked), returns 200.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GossipRevokeRequest"
+      responses:
+        "200":
+          description: Revocation accepted (or block already revoked).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+        "400":
+          description: |
+            Invalid revocation: signature verification failure, block not found, or
+            malformed data.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
 components:
   schemas:
-    # TODO: Block, SigEntry, ErrorResponse, etc.
+
+    Block:
+      type: object
+      description: |
+        A single GPG public key entry on the ledger, including its full sig chain and
+        revocation status. The hash field is the content address and unique identifier.
+      required:
+        - hash
+        - fingerprint
+        - armored_key
+        - uids
+        - submit_timestamp
+        - self_sig
+        - sig_chain_head
+        - revoked
+        - revocation_sig
+      properties:
+        hash:
+          type: string
+          description: |
+            SHA-256 of (fingerprint || 0x00 || armored_key || 0x00 || self_sig) where all
+            values are UTF-8 bytes and 0x00 is a single null byte separator. Uppercase hex.
+            This is the block's unique content address.
+          pattern: "^[A-F0-9]{64}$"
+          example: "D84C2F1E9A305B76C4E8F92A03B17D5E684C29A1F0378BE45CD91A37260F8B4E"
+        fingerprint:
+          type: string
+          description: |
+            OpenPGP key fingerprint. Uppercase hex, no spaces. 40 characters for v4 keys
+            (SHA-1 fingerprint); 64 characters for v5 keys (SHA-256 fingerprint).
+          pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+          example: "A3F9C2E1B8D47650F29A3C1E7B84D6F509E28A1C"
+        armored_key:
+          type: string
+          description: |
+            Full ASCII-armored OpenPGP public key block including header and footer lines,
+            exactly as exported by gpg --armor --export.
+          example: "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        uids:
+          type: array
+          description: |
+            UID strings extracted verbatim from the key at submission time
+            (e.g. "Alice Example <alice@example.com>").
+          items:
+            type: string
+          example: ["Alice Example <alice@example.com>"]
+        submit_timestamp:
+          type: integer
+          format: int64
+          description: |
+            Unix timestamp in seconds at which the key was submitted. Chosen and authenticated
+            by the submitting client via the self_sig (the timestamp is included in the SUBMIT
+            payload). Nodes must not set or modify this value.
+          example: 1712345678
+        self_sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_SUBMIT_V1
+            payload. Proves the submitter controls the private key corresponding to the
+            submitted public key.
+          example: "iQEzBAABCAAdFiEEo/nC4bjUdlDynjwee4TWb1CeKBwFAmYJH..."
+        sig_chain_head:
+          type: string
+          description: |
+            Hash of the most recently appended SigEntry. Empty string if no trust signatures
+            have been added yet. Updated each time a SigEntry is appended.
+          pattern: "^([A-F0-9]{64}|)$"
+          example: "F1E2D3C4B5A6978869504132ABCDEF9876543210FEDCBA01234567890ABCDEF12"
+        sig_chain:
+          type: array
+          description: |
+            Ordered list of SigEntries from oldest (prev_hash = block hash) to newest
+            (hash = sig_chain_head). Present in GET responses; omitted or empty in
+            contexts where only the block metadata is needed.
+          items:
+            $ref: "#/components/schemas/SigEntry"
+        revoked:
+          type: boolean
+          description: |
+            True if the key owner has revoked this block. Once true, never set back to false.
+          example: false
+        revocation_sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_REVOKE_V1
+            payload. Empty string if not revoked.
+          example: ""
+
+    SigEntry:
+      type: object
+      description: |
+        A single trust signature appended to a block's sig chain. SigEntries form a singly-
+        linked list anchored to the block hash. Any insertion, deletion, or reordering of
+        entries breaks the chain and is detectable.
+      required:
+        - hash
+        - prev_hash
+        - signer_fingerprint
+        - sig
+        - timestamp
+      properties:
+        hash:
+          type: string
+          description: |
+            SHA-256 of (prev_hash || 0x00 || signer_fingerprint || 0x00 || sig || 0x00 ||
+            str(timestamp)) where all values are UTF-8 bytes. Uppercase hex. Unique identity
+            of this SigEntry.
+          pattern: "^[A-F0-9]{64}$"
+          example: "1A2B3C4D5E6F7A8B9C0D1E2F3A4B5C6D7E8F9A0B1C2D3E4F5A6B7C8D9E0F1A2B"
+        prev_hash:
+          type: string
+          description: |
+            Hash of the preceding SigEntry in the chain, or the block's hash if this is
+            the first signature on the block. Creates the linked chain.
+          pattern: "^[A-F0-9]{64}$"
+          example: "D84C2F1E9A305B76C4E8F92A03B17D5E684C29A1F0378BE45CD91A37260F8B4E"
+        signer_fingerprint:
+          type: string
+          description: |
+            Uppercase hex fingerprint of the signing key. No spaces. 40 chars for v4,
+            64 for v5.
+          pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+          example: "B1E72CA4F98053D2E46B71CA3D905F2A1E8B4C7F"
+        sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_TRUST_V1
+            payload.
+          example: "iQEzBAABCAAdFiEEsecypPmAU9LkawHKPZBfKhHcKr8FAmYJ..."
+        timestamp:
+          type: integer
+          format: int64
+          description: |
+            Unix timestamp in seconds at which the trust signature was created. Chosen and
+            authenticated by the signing client (included in the TRUST payload). Nodes must
+            not set or modify this value.
+          example: 1712350000
+        signer_armored_key:
+          type: string
+          description: |
+            Off-ledger signers only: the signer's full ASCII-armored public key stored inline.
+            Empty string (or field absent) for on-ledger signers. Stored for future
+            re-verification without fetching from an external source.
+          example: ""
+        source_node:
+          type: string
+          format: uri
+          description: |
+            Off-ledger signers only: URL of the ledger node where the signer's block lives.
+            Used by clients for cross-ledger trust traversal. Empty string (or field absent)
+            if not provided or if the signer is on-ledger.
+          example: ""
+
+    AddBlockRequest:
+      type: object
+      description: Request body for POST /block. The node extracts the fingerprint from the key.
+      required:
+        - armored_key
+        - self_sig
+      properties:
+        armored_key:
+          type: string
+          description: |
+            Full ASCII-armored OpenPGP public key block to register on the ledger.
+          example: "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        self_sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_SUBMIT_V1
+            payload. Must be signed by the private key corresponding to armored_key.
+          example: "iQEzBAABCAAdFiEEo/nC4bjUdlDynjwee4TWb1CeKBwFAmYJH..."
+
+    SignBlockRequest:
+      type: object
+      description: Request body for POST /block/{fingerprint}/sign.
+      required:
+        - signer_fingerprint
+        - sig
+      properties:
+        signer_fingerprint:
+          type: string
+          description: |
+            Uppercase hex fingerprint of the signing key. For on-ledger signers, this must
+            match a block that exists on this node. For off-ledger signers, this must match
+            the key in signer_armored_key.
+          pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+          example: "B1E72CA4F98053D2E46B71CA3D905F2A1E8B4C7F"
+        sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_TRUST_V1
+            payload. Signed by the private key corresponding to signer_fingerprint.
+          example: "iQEzBAABCAAdFiEEsecypPmAU9LkawHKPZBfKhHcKr8FAmYJ..."
+        signer_armored_key:
+          type: string
+          description: |
+            Off-ledger signers only: the signer's full ASCII-armored public key. When present
+            and non-empty, the node uses this key to verify the sig instead of looking up
+            the signer on the local ledger. The key is stored inline in the SigEntry.
+            Must be absent or empty for on-ledger signers.
+          example: ""
+        source_node:
+          type: string
+          format: uri
+          description: |
+            Off-ledger signers only: URL of the ledger node where the signer's block lives.
+            Stored in the SigEntry for use by clients during cross-ledger trust traversal.
+            Optional even for off-ledger signers.
+          example: "https://keys.partner.org"
+
+    RevokeBlockRequest:
+      type: object
+      description: Request body for POST /block/{fingerprint}/revoke.
+      required:
+        - sig
+      properties:
+        sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_REVOKE_V1
+            payload. Must be signed by the private key corresponding to the block being
+            revoked (i.e. the key in the block's armored_key field).
+          example: "iQEzBAABCAAdFiEEo/nC4bjUdlDynjwee4TWb1CeKBwFAmYJR..."
+
+    AddPeerRequest:
+      type: object
+      description: Request body for POST /peers.
+      required:
+        - addr
+      properties:
+        addr:
+          type: string
+          format: uri
+          description: |
+            URL of the peer node to register. Must use http or https scheme. Must not
+            resolve to a private or loopback address.
+          example: "https://keys.partner.org"
+
+    GossipBlockRequest:
+      type: object
+      description: |
+        Request body for POST /p2p/block. Carries a full block gossiped by a peer.
+      required:
+        - block
+        - origin
+      properties:
+        block:
+          $ref: "#/components/schemas/Block"
+        origin:
+          type: string
+          format: uri
+          description: |
+            URL of the node that first accepted this block (not necessarily the forwarding node).
+          example: "https://keys.origin-node.org"
+
+    GossipSignRequest:
+      type: object
+      description: |
+        Request body for POST /p2p/sign. Carries a new SigEntry gossiped by a peer.
+      required:
+        - fingerprint
+        - entry
+        - origin
+      properties:
+        fingerprint:
+          type: string
+          description: Fingerprint of the block this SigEntry belongs to.
+          pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+          example: "A3F9C2E1B8D47650F29A3C1E7B84D6F509E28A1C"
+        entry:
+          $ref: "#/components/schemas/SigEntry"
+        origin:
+          type: string
+          format: uri
+          description: |
+            URL of the node that first accepted this SigEntry.
+          example: "https://keys.origin-node.org"
+
+    GossipRevokeRequest:
+      type: object
+      description: |
+        Request body for POST /p2p/revoke. Carries a revocation gossiped by a peer.
+      required:
+        - fingerprint
+        - revocation_sig
+        - origin
+      properties:
+        fingerprint:
+          type: string
+          description: Fingerprint of the block being revoked.
+          pattern: "^[A-F0-9]{40}$|^[A-F0-9]{64}$"
+          example: "A3F9C2E1B8D47650F29A3C1E7B84D6F509E28A1C"
+        revocation_sig:
+          type: string
+          description: |
+            Base64-encoded detached binary OpenPGP signature over the GPGCHAIN_REVOKE_V1
+            payload.
+          example: "iQEzBAABCAAdFiEEo/nC4bjUdlDynjwee4TWb1CeKBwFAmYJR..."
+        origin:
+          type: string
+          format: uri
+          description: |
+            URL of the node that first accepted this revocation.
+          example: "https://keys.origin-node.org"
+
+    ErrorResponse:
+      type: object
+      description: Returned by all endpoints on error.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable description of the error.
+          example: "signature verification failed"
+
+    WellKnownResponse:
+      type: object
+      description: |
+        Node metadata returned by GET /.well-known/gpgchain.json. Used by clients for
+        cross-ledger discovery — to find which node holds keys for a given email domain
+        and to discover peer nodes.
+      required:
+        - node_url
+        - domains
+        - peers
+      properties:
+        node_url:
+          type: string
+          format: uri
+          description: The canonical URL of this node.
+          example: "https://keys.example.com"
+        domains:
+          type: array
+          description: |
+            Email domains whose keys this node accepts. Corresponds to the node's domain
+            allowlist configuration.
+          items:
+            type: string
+          example: ["example.com", "subsidiary.example.com"]
+        peers:
+          type: array
+          description: |
+            URLs of known peer nodes. Allows clients to discover the broader network.
+          items:
+            type: string
+            format: uri
+          example: ["https://keys.partner.org"]
+
+    HashesResponse:
+      type: object
+      description: |
+        Map of fingerprint strings to sig_chain_head strings. Returned by GET /p2p/hashes.
+        Used by peers to diff their ledger state. An empty string value means the block
+        has no trust signatures yet.
+      additionalProperties:
+        type: string
+        description: |
+          The sig_chain_head for the block identified by the key fingerprint. Empty string
+          if the block has no trust signatures.
+        pattern: "^([A-F0-9]{64}|)$"
+      example:
+        "A3F9C2E1B8D47650F29A3C1E7B84D6F509E28A1C": "F1E2D3C4B5A6978869504132ABCDEF9876543210FEDCBA01234567890ABCDEF12"
+        "B1E72CA4F98053D2E46B71CA3D905F2A1E8B4C7F": ""

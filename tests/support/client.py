@@ -19,16 +19,18 @@ class APIClient:
         self.last_response = requests.get(self._url(f"/block/{fingerprint}"))
         return self.last_response
 
-    def add_block(self, armored_key: str, self_sig: str):
-        self.last_response = requests.post(
-            self._url("/block"),
-            json={"armored_key": armored_key, "self_sig": self_sig},
-        )
+    def add_block(self, armored_key: str, self_sig: str, submit_timestamp: int = None):
+        body = {"armored_key": armored_key, "self_sig": self_sig}
+        if submit_timestamp is not None:
+            body["submit_timestamp"] = submit_timestamp
+        self.last_response = requests.post(self._url("/block"), json=body)
         return self.last_response
 
     def sign_block(self, fingerprint: str, signer_fingerprint: str, sig: str,
-                   signer_armored_key: str = "", source_node: str = ""):
+                   timestamp: int = None, signer_armored_key: str = "", source_node: str = ""):
         body = {"signer_fingerprint": signer_fingerprint, "sig": sig}
+        if timestamp is not None:
+            body["timestamp"] = timestamp
         if signer_armored_key:
             body["signer_armored_key"] = signer_armored_key
         if source_node:

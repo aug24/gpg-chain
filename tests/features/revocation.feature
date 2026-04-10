@@ -15,7 +15,7 @@ Feature: Revocation
   Scenario: Invalid revocation signature is rejected
     Given Alice's key is on the ledger
     When Alice submits a corrupted revocation signature
-    Then the response status is 400
+    Then the response status is 403
 
   Scenario: Revoked block is still retrievable and flagged
     Given Alice's key is on the ledger

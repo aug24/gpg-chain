@@ -13,3 +13,7 @@ def before_all(context):
 
 def before_scenario(context, scenario):
     context.client = APIClient(context.servers[0])
+    context.keys = {}
+    context.submitted_blocks = {}
+
+

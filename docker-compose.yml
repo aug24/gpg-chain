@@ -1,0 +1,65 @@
+services:
+  node-a:
+    build:
+      context: implementations/python
+    environment:
+      GPGCHAIN_NODE_URL: "http://node-a:8080"
+      GPGCHAIN_ALLOW_ALL: "true"
+      GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
+      GPGCHAIN_STORE_DIR: "/data"
+    volumes:
+      - node-a-data:/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/peers')"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  node-b:
+    build:
+      context: implementations/python
+    environment:
+      GPGCHAIN_NODE_URL: "http://node-b:8080"
+      GPGCHAIN_ALLOW_ALL: "true"
+      GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
+      GPGCHAIN_STORE_DIR: "/data"
+    volumes:
+      - node-b-data:/data
+    ports:
+      - "8081:8080"
+    depends_on:
+      node-a:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/peers')"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  node-c:
+    build:
+      context: implementations/python
+    environment:
+      GPGCHAIN_NODE_URL: "http://node-c:8080"
+      GPGCHAIN_ALLOW_ALL: "true"
+      GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
+      GPGCHAIN_STORE_DIR: "/data"
+    volumes:
+      - node-c-data:/data
+    ports:
+      - "8082:8080"
+    depends_on:
+      node-b:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/peers')"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:
