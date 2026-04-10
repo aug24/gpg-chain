@@ -1,48 +1,63 @@
 // Package chain defines the Block and SigEntry types and their hash computation.
 package chain
 
+import (
+	"crypto/sha256"
+	"fmt"
+	"strings"
+)
+
 // SigEntry is one trust signature in a block's linked signature chain.
 type SigEntry struct {
-	Hash              string `json:"hash"`               // SHA-256 of (PrevHash|SignerFingerprint|Sig|Timestamp)
-	PrevHash          string `json:"prev_hash"`          // previous SigEntry hash, or block Hash if first
+	Hash              string `json:"hash"`
+	PrevHash          string `json:"prev_hash"`
 	SignerFingerprint string `json:"signer_fingerprint"`
-	Sig               string `json:"sig"`                // base64 detached GPG sig over TRUST payload
-	Timestamp         int64  `json:"timestamp"`          // unix seconds, set by client, authenticated via Sig
-	SignerArmoredKey  string `json:"signer_armored_key,omitempty"` // off-ledger only
-	SourceNode        string `json:"source_node,omitempty"`        // off-ledger only
+	Sig               string `json:"sig"`
+	Timestamp         int64  `json:"timestamp"`
+	SignerArmoredKey  string `json:"signer_armored_key,omitempty"`
+	SourceNode        string `json:"source_node,omitempty"`
 }
 
 // Block is a single entry in the ledger.
 type Block struct {
-	Hash            string     `json:"hash"`             // SHA-256 of (Fingerprint|ArmoredKey|SelfSig)
-	Fingerprint     string     `json:"fingerprint"`      // uppercase hex, no spaces
-	ArmoredKey      string     `json:"armored_key"`
-	UIDs            []string   `json:"uids"`
-	SubmitTimestamp int64      `json:"submit_timestamp"`
-	SelfSig         string     `json:"self_sig"`
-	SigChainHead    string     `json:"sig_chain_head"`
-	SigEntries      []SigEntry `json:"sig_entries,omitempty"`
-	Revoked         bool       `json:"revoked"`
-	RevocationSig   string     `json:"revocation_sig,omitempty"`
+	Hash            string      `json:"hash"`
+	Fingerprint     string      `json:"fingerprint"`
+	ArmoredKey      string      `json:"armored_key"`
+	UIDs            []string    `json:"uids"`
+	SubmitTimestamp int64       `json:"submit_timestamp"`
+	SelfSig         string      `json:"self_sig"`
+	SigChainHead    string      `json:"sig_chain_head"`
+	SigEntries      []*SigEntry `json:"sig_chain"`
+	Revoked         bool        `json:"revoked"`
+	RevocationSig   string      `json:"revocation_sig"`
 }
 
-// ComputeBlockHash returns SHA-256 of (fingerprint | armoredKey | selfSig) as uppercase hex.
-func ComputeBlockHash(fingerprint, armoredKey, selfSig string) (string, error) {
-	panic("not implemented")
+var nullByte = []byte{0x00}
+
+func joinFields(parts ...string) []byte {
+	var buf []byte
+	for i, p := range parts {
+		if i > 0 {
+			buf = append(buf, nullByte...)
+		}
+		buf = append(buf, []byte(p)...)
+	}
+	return buf
 }
 
-// ComputeSigEntryHash returns SHA-256 of (prevHash | signerFP | sig | timestamp) as uppercase hex.
-func ComputeSigEntryHash(prevHash, signerFP, sig string, timestamp int64) (string, error) {
-	panic("not implemented")
+func hexSHA256(b []byte) string {
+	sum := sha256.Sum256(b)
+	return strings.ToUpper(fmt.Sprintf("%x", sum))
 }
 
-// VerifyBlockHash returns true if block.Hash matches the computed hash.
-func VerifyBlockHash(b *Block) bool {
-	panic("not implemented")
+// ComputeBlockHash returns SHA-256(fingerprint | 0x00 | armoredKey | 0x00 | selfSig)
+// as 64 uppercase hex characters.
+func ComputeBlockHash(fingerprint, armoredKey, selfSig string) string {
+	return hexSHA256(joinFields(fingerprint, armoredKey, selfSig))
 }
 
-// VerifySigChain walks the sig chain from SigChainHead back to block Hash.
-// Returns true if the chain is intact.
-func VerifySigChain(b *Block) bool {
-	panic("not implemented")
+// ComputeSigEntryHash returns SHA-256(prevHash | 0x00 | signerFP | 0x00 | sig | 0x00 | timestamp)
+// as 64 uppercase hex characters.
+func ComputeSigEntryHash(prevHash, signerFP, sig string, timestamp int64) string {
+	return hexSHA256(joinFields(prevHash, signerFP, sig, fmt.Sprintf("%d", timestamp)))
 }
