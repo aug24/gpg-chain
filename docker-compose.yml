@@ -1,3 +1,10 @@
+## Mixed cluster: Python / Go / Python
+## node-b is the Go implementation — tests cross-implementation gossip and sync.
+##
+## Ports: node-a → 8080, node-b → 8081, node-c → 8082
+## Run tests: ./scripts/integration-test.sh
+## Run tests (skip rebuild): ./scripts/integration-test.sh --no-build
+
 services:
   node-a:
     build:
@@ -7,6 +14,7 @@ services:
       GPGCHAIN_ALLOW_ALL: "true"
       GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
       GPGCHAIN_STORE_DIR: "/data"
+      GPGCHAIN_PEERS: "http://node-b:8080"
     volumes:
       - node-a-data:/data
     ports:
@@ -19,12 +27,18 @@ services:
 
   node-b:
     build:
-      context: implementations/python
+      context: implementations/go
     environment:
       GPGCHAIN_NODE_URL: "http://node-b:8080"
       GPGCHAIN_ALLOW_ALL: "true"
       GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
       GPGCHAIN_STORE_DIR: "/data"
+    # node-b is seeded at launch via --peers flag in CMD (env var not yet wired in Go)
+    command:
+      - "--addr=0.0.0.0:8080"
+      - "--allow-all-domains"
+      - "--allow-private-peers"
+      - "--peers=http://node-a:8080,http://node-c:8080"
     volumes:
       - node-b-data:/data
     ports:
@@ -33,7 +47,7 @@ services:
       node-a:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/peers')"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/peers || exit 1"]
       interval: 2s
       timeout: 5s
       retries: 15
@@ -46,6 +60,7 @@ services:
       GPGCHAIN_ALLOW_ALL: "true"
       GPGCHAIN_ALLOW_PRIVATE_PEERS: "true"
       GPGCHAIN_STORE_DIR: "/data"
+      GPGCHAIN_PEERS: "http://node-b:8080"
     volumes:
       - node-c-data:/data
     ports:

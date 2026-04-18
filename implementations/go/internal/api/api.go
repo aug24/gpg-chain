@@ -430,7 +430,7 @@ func (cfg *Config) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !cfg.AllowPrivatePeers {
+	{
 		host := parsed.Hostname()
 		addrs, err := net.LookupHost(host)
 		if err != nil {
@@ -442,7 +442,12 @@ func (cfg *Config) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 			if ip == nil {
 				continue
 			}
-			if ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			// Always reject loopback — a node must never peer with itself.
+			if ip.IsLoopback() {
+				errJSON(w, http.StatusBadRequest, "loopback addresses are not allowed")
+				return
+			}
+			if !cfg.AllowPrivatePeers && (ip.IsPrivate() || ip.IsLinkLocalUnicast()) {
 				errJSON(w, http.StatusBadRequest, "private or loopback addresses are not allowed")
 				return
 			}

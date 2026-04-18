@@ -290,17 +290,19 @@ def register_routes(app: FastAPI) -> None:
         if len(state.peer_list) >= MAX_PEERS and addr not in state.peer_list:
             return _err("peer list is at capacity", 429)
 
-        # Rule 2 — reject private/loopback addresses (unless allow_private_peers)
-        if not state.allow_private_peers:
-            try:
-                host = parsed.hostname or ""
-                addr_info = socket.getaddrinfo(host, None)
-                for info in addr_info:
-                    ip = ipaddress.ip_address(info[4][0])
-                    if ip.is_private or ip.is_loopback or ip.is_link_local:
-                        return _err("private or loopback addresses are not allowed", 400)
-            except Exception:
-                return _err("could not resolve peer address", 400)
+        # Rule 2 — reject loopback always; reject private only if allow_private_peers is off
+        try:
+            host = parsed.hostname or ""
+            addr_info = socket.getaddrinfo(host, None)
+            for info in addr_info:
+                ip = ipaddress.ip_address(info[4][0])
+                # Loopback means the peer is this node itself — always reject.
+                if ip.is_loopback:
+                    return _err("loopback addresses are not allowed", 400)
+                if not state.allow_private_peers and (ip.is_private or ip.is_link_local):
+                    return _err("private or loopback addresses are not allowed", 400)
+        except Exception:
+            return _err("could not resolve peer address", 400)
 
         # Rule 3 — reciprocal reachability check
         try:

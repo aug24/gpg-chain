@@ -25,6 +25,9 @@ def create_app(
         domains = [d.strip() for d in env_domains.split(",") if d.strip()] if env_domains else []
     if node_url == "":
         node_url = os.environ.get("GPGCHAIN_NODE_URL", "")
+    if not peers:
+        env_peers = os.environ.get("GPGCHAIN_PEERS", "")
+        peers = [p.strip() for p in env_peers.split(",") if p.strip()] if env_peers else []
 
     from gpgchain.store.dir_store import DirStore
     from gpgchain.p2p.gossip import Gossip

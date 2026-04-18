@@ -1,0 +1,7 @@
+# Exclude test data and compiled outputs from the build context.
+# The vendor/ directory IS needed by the Dockerfile and must not be excluded.
+data/
+*.db
+*.db-shm
+*.db-wal
+gpgchain-node
