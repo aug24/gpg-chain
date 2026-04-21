@@ -448,6 +448,11 @@ def step_node_b_syncs_a(context):
     if not hasattr(context, "node_b"):
         return
     _peer(context.node_b, context.servers[0])
+    # Explicitly trigger sync with all known peers — the _peer call above may have
+    # been rejected (e.g. loopback URL in docker) but the node already knows its
+    # peers from startup config. This ensures sigs/blocks are pulled even when
+    # gossip delivery was incomplete due to ordering races.
+    context.node_b.trigger_sync()
 
 
 @then("node B's copy of the block has all 3 signatures")

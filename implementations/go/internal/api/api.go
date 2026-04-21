@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,7 @@ func NewRouter(cfg *Config) http.Handler {
 	r.Post("/p2p/block", cfg.handleP2PReceiveBlock)
 	r.Post("/p2p/sign", cfg.handleP2PReceiveSig)
 	r.Post("/p2p/revoke", cfg.handleP2PReceiveRevoke)
+	r.Post("/p2p/sync", cfg.handleP2PSync)
 
 	return r
 }
@@ -389,10 +391,16 @@ func (cfg *Config) handleWellKnown(w http.ResponseWriter, r *http.Request) {
 	if domains == nil {
 		domains = []string{}
 	}
+	peerNodes := cfg.Peers.PeerNodes()
+	if peerNodes == nil {
+		peerNodes = []p2p.PeerNode{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_url": cfg.NodeURL,
-		"domains":  domains,
-		"peers":    peers,
+		"node_url":   cfg.NodeURL,
+		"domains":    domains,
+		"allow_all":  cfg.AllowAll,
+		"peers":      peers,
+		"peer_nodes": peerNodes,
 	})
 }
 
@@ -468,6 +476,24 @@ func (cfg *Config) handleAddPeer(w http.ResponseWriter, r *http.Request) {
 
 	cfg.Peers.Add(addr) //nolint:errcheck
 
+	// Fetch peer's well-known metadata in background for discovery prioritisation.
+	go func(peerURL string) {
+		wkURL := strings.TrimRight(peerURL, "/") + "/.well-known/gpgchain.json"
+		resp, err := http.Get(wkURL) //nolint:gosec
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+		var wk struct {
+			Domains  []string `json:"domains"`
+			AllowAll bool     `json:"allow_all"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&wk); err != nil {
+			return
+		}
+		cfg.Peers.SetMeta(peerURL, p2p.PeerMeta{Domains: wk.Domains, AllowAll: wk.AllowAll})
+	}(addr)
+
 	if cfg.NodeURL != "" {
 		go registerSelfWithPeer(addr, cfg.NodeURL)
 	}
@@ -491,6 +517,18 @@ func registerSelfWithPeer(peerURL, myNodeURL string) {
 }
 
 // --- p2p inter-node endpoints ---
+
+// handleP2PSync triggers an immediate sync with all known peers.
+// Useful for testing and operational purposes when gossip delivery may have been incomplete.
+func (cfg *Config) handleP2PSync(w http.ResponseWriter, r *http.Request) {
+	peers := cfg.Peers.All()
+	log.Printf("DEBUG p2p/sync: triggering sync with %d peers: %v", len(peers), peers)
+	syncCfg := cfg.SyncCfg
+	for _, peer := range peers {
+		go p2p.SyncWithPeer(peer, syncCfg)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
 
 func (cfg *Config) handleP2PHashes(w http.ResponseWriter, r *http.Request) {
 	hashes, err := cfg.Store.Hashes()
@@ -637,6 +675,12 @@ func (cfg *Config) handleP2PReceiveSig(w http.ResponseWriter, r *http.Request) {
 	} else {
 		signerBlock, _ := cfg.Store.Get(signerFP)
 		if signerBlock == nil {
+			// Sig may have arrived before the signer's block due to gossip ordering.
+			// Try to fetch the signer block from known peers before giving up.
+			p2p.FetchBlockFromPeers(cfg.Peers, signerFP, cfg.SyncCfg)
+			signerBlock, _ = cfg.Store.Get(signerFP)
+		}
+		if signerBlock == nil {
 			errJSON(w, http.StatusBadRequest, "signer block not found on ledger")
 			return
 		}
@@ -645,10 +689,10 @@ func (cfg *Config) handleP2PReceiveSig(w http.ResponseWriter, r *http.Request) {
 
 	payload := gpg.TrustPayload(block.Hash, signerFP, ts)
 	if !gpg.VerifyDetachedSig(payload, sig, signerKey) {
+		log.Printf("DEBUG p2p/sign: sig verification FAILED fp=%s blockHash=%s signerFP=%s ts=%d", fp, block.Hash, signerFP, ts)
 		errJSON(w, http.StatusBadRequest, "sig verification failed")
 		return
 	}
-
 	for _, existing := range block.SigEntries {
 		if existing.SignerFingerprint == signerFP {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -658,6 +702,7 @@ func (cfg *Config) handleP2PReceiveSig(w http.ResponseWriter, r *http.Request) {
 
 	computedHash := chain.ComputeSigEntryHash(prevHash, signerFP, sig, ts)
 	if claimedHash != "" && claimedHash != computedHash {
+		log.Printf("DEBUG p2p/sign: hash mismatch fp=%s signerFP=%s", fp, signerFP)
 		errJSON(w, http.StatusBadRequest, "SigEntry hash mismatch")
 		return
 	}
@@ -671,6 +716,7 @@ func (cfg *Config) handleP2PReceiveSig(w http.ResponseWriter, r *http.Request) {
 		SignerArmoredKey:  signerArmoredKey,
 		SourceNode:        sourceNode,
 	}
+	log.Printf("DEBUG p2p/sign: storing sig fp=%s signerFP=%s", fp, signerFP)
 	cfg.Store.AddSig(fp, entry) //nolint:errcheck
 
 	origin := r.Header.Get("X-Forwarded-For")

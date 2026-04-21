@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	pgpcrypto "github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -105,8 +107,32 @@ func RevokePayload(fingerprint, blockHash string) []byte {
 	return joinNull("GPGCHAIN_REVOKE_V1", fingerprint, blockHash)
 }
 
+// Sign creates a base64-encoded detached binary GPG signature over payload.
+// armoredPrivateKey must include the private key material.
+func Sign(payload []byte, armoredPrivateKey string) (string, error) {
+	block, err := armor.Decode(strings.NewReader(armoredPrivateKey))
+	if err != nil {
+		return "", fmt.Errorf("decode private key armor: %w", err)
+	}
+	el, err := pgpcrypto.ReadEntity(packet.NewReader(block.Body))
+	if err != nil {
+		return "", fmt.Errorf("read private key: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := pgpcrypto.DetachSign(&buf, el, bytes.NewReader(payload), nil); err != nil {
+		return "", fmt.Errorf("detach sign: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
 // VerifyDetachedSig verifies a base64-encoded detached binary GPG signature over payload.
 // Returns true if the signature is valid for the given armored public key.
+//
+// We allow a 60-second clock skew tolerance so that signatures created at nearly
+// the same instant as verification don't fail due to sub-second timing differences
+// between the signing client and this node. go-crypto treats a signature whose
+// CreationTime is strictly after config.Now() as "expired", so we advance the
+// reference clock slightly to absorb any skew.
 func VerifyDetachedSig(payload []byte, b64Sig, armoredPublicKey string) bool {
 	sigBytes, err := base64.StdEncoding.DecodeString(b64Sig)
 	if err != nil {
@@ -117,12 +143,22 @@ func VerifyDetachedSig(payload []byte, b64Sig, armoredPublicKey string) bool {
 		return false
 	}
 	keyring := pgpcrypto.EntityList{el}
+	cfg := &packet.Config{
+		Time: func() time.Time {
+			// Add 60s tolerance so signatures created "just now" by a remote
+			// client are not rejected as being from the future.
+			return time.Now().Add(60 * time.Second)
+		},
+	}
 	_, err = pgpcrypto.CheckDetachedSignature(
 		keyring,
 		bytes.NewReader(payload),
 		bytes.NewReader(sigBytes),
-		nil,
+		cfg,
 	)
+	if err != nil {
+		log.Printf("DEBUG VerifyDetachedSig: FAILED error=%v payloadLen=%d sigLen=%d", err, len(payload), len(sigBytes))
+	}
 	return err == nil
 }
 

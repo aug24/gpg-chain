@@ -44,6 +44,7 @@ def create_app(
     app.state.node_url = node_url
     app.state.peer_list = peer_list
 
+    app.state.peer_domains: dict[str, list[str]] = {}  # peer URL → declared domains
     app.state.gossip = Gossip(app.state.peer_list)
     app.state.sync = Sync(
         app.state.store,

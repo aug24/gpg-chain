@@ -36,6 +36,7 @@ def _sign_key(context, signer: str, target: str, source_node: str = "",
         context.keys[target]["fingerprint"],
         signer_key["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=signer_armored_key,
         source_node=source_node,
     )
@@ -204,6 +205,7 @@ def step_dave_signs_alice_inline(context):
         context.keys["alice"]["fingerprint"],
         dave["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=dave["armored_public"],
     )
 
@@ -234,6 +236,7 @@ def step_weak_owner_signs_alice_inline(context):
         context.keys["alice"]["fingerprint"],
         weak["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=weak["armored_public"],
     )
 
@@ -253,6 +256,7 @@ def step_dave_signs_alice_inline_with_source_node(context):
         context.keys["alice"]["fingerprint"],
         dave["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=dave["armored_public"],
         source_node=source_node,
     )
@@ -272,6 +276,7 @@ def step_dave_attempts_sign_revoked_inline(context):
         context.keys["alice"]["fingerprint"],
         dave["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=dave["armored_public"],
     )
 

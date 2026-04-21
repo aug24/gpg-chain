@@ -20,7 +20,7 @@ def verify_detached_sig(payload: bytes, b64_sig: str, armored_public_key: str) -
         sig = pgpy.PGPSignature.from_blob(sig_bytes)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            key.verify(payload, sig)
-        return True
+            result = key.verify(payload, sig)
+        return bool(result)
     except Exception:
         return False

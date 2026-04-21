@@ -58,6 +58,14 @@ def _evaluate_trust(context, target_name: str, depth: int) -> int:
     return score(graph, target_fp, root_fp, max_depth=depth, revoked_set=revoked_set)
 
 
+def _evaluate_disjoint_trust(context, target_name: str, depth: int) -> int:
+    blocks = _get_all_blocks(context)
+    graph, revoked_set = build_graph(blocks)
+    root_fp = context.keys["alice"]["fingerprint"]
+    target_fp = context.keys[target_name]["fingerprint"]
+    return score(graph, target_fp, root_fp, max_depth=depth, revoked_set=revoked_set, disjoint=True)
+
+
 def _ensure_on_ledger(context, name: str, uid: str):
     _ensure_keys(context)
     if name not in context.keys:
@@ -105,6 +113,23 @@ def step_bob_carol_dave_on_ledger(context):
             pass
 
 
+@given("Bob, Carol, Dave and Eve are on the ledger")
+def step_bob_carol_dave_eve_on_ledger(context):
+    _ensure_keys(context)
+    for name, uid in [
+        ("bob", "bob@example.com"),
+        ("carol", "carol@example.com"),
+        ("dave", "dave@example.com"),
+        ("eve", "eve@example.com"),
+    ]:
+        if name not in context.keys:
+            context.keys[name] = context.gpg.generate_key(uid)
+        try:
+            _put_key_on_ledger(context, name)
+        except AssertionError:
+            pass
+
+
 @given("Alice signed Bob, Bob signed Carol, Carol signed Dave")
 def step_alice_bob_carol_dave_chain(context):
     _sign_key(context, "alice", "bob")
@@ -116,6 +141,26 @@ def step_alice_bob_carol_dave_chain(context):
 def step_alice_signed_bob_and_carol(context):
     _sign_key(context, "alice", "bob")
     _sign_key(context, "alice", "carol")
+
+
+@given("Alice signed Bob")
+def step_alice_signed_bob_only(context):
+    _sign_key(context, "alice", "bob")
+
+
+@given("Alice signed Eve")
+def step_alice_signed_eve(context):
+    _sign_key(context, "alice", "eve")
+
+
+@given("Bob signed Carol")
+def step_bob_signed_carol_trust(context):
+    _sign_key(context, "bob", "carol")
+
+
+@given("Eve signed Carol")
+def step_eve_signed_carol(context):
+    _sign_key(context, "eve", "carol")
 
 
 @given("Bob signed Dave")
@@ -192,6 +237,7 @@ def step_dave_signed_bob_inline(context):
         context.keys["bob"]["fingerprint"],
         dave["fingerprint"],
         sig,
+        timestamp=ts,
         signer_armored_key=dave["armored_public"],
     )
 
@@ -254,9 +300,27 @@ def step_alice_checks_bob(context):
     context.trust_score = _evaluate_trust(context, "bob", depth=2)
 
 
+@when("Alice checks Dave's independent path score with depth {depth:d}")
+def step_alice_checks_dave_disjoint_depth(context, depth):
+    context.disjoint_score = _evaluate_disjoint_trust(context, "dave", depth=depth)
+
+
+@when("Alice checks Dave's trust score with depth {depth:d}")
+def step_alice_checks_dave_trust_depth(context, depth):
+    context.trust_score = _evaluate_trust(context, "dave", depth=depth)
+
+
 # ---------------------------------------------------------------------------
 # Thens
 # ---------------------------------------------------------------------------
+
+@then("the independent path score is {expected:d}")
+def step_independent_path_score_is(context, expected):
+    actual = context.disjoint_score
+    assert actual == expected, (
+        f"Expected independent path score {expected}, got {actual}"
+    )
+
 
 @then("the trust score is {expected:d}")
 def step_trust_score_is(context, expected):

@@ -19,15 +19,23 @@ import (
 
 const seenTTL = time.Hour
 
+// PeerMeta holds the cached metadata fetched from a peer's well-known endpoint.
+type PeerMeta struct {
+	Domains  []string
+	AllowAll bool
+}
+
 // PeerList manages the set of known peer URLs.
 type PeerList struct {
 	mu      sync.RWMutex
 	peers   []string
 	maxSize int
+	metaMu  sync.RWMutex
+	meta    map[string]PeerMeta // peer URL → cached well-known metadata
 }
 
 func NewPeerList(maxSize int) *PeerList {
-	return &PeerList{maxSize: maxSize}
+	return &PeerList{maxSize: maxSize, meta: make(map[string]PeerMeta)}
 }
 
 // Add appends url if not already present and under capacity.
@@ -67,6 +75,41 @@ func (p *PeerList) Len() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return len(p.peers)
+}
+
+// SetMeta records the cached well-known metadata for a peer URL.
+func (p *PeerList) SetMeta(url string, m PeerMeta) {
+	p.metaMu.Lock()
+	defer p.metaMu.Unlock()
+	p.meta[url] = m
+}
+
+// PeerNode holds a peer URL together with its declared domains and allow_all flag.
+type PeerNode struct {
+	URL      string   `json:"url"`
+	Domains  []string `json:"domains"`
+	AllowAll bool     `json:"allow_all"`
+}
+
+// PeerNodes returns all known peers with their cached metadata.
+// If metadata has not yet been fetched the fields default to empty/false.
+func (p *PeerList) PeerNodes() []PeerNode {
+	p.mu.RLock()
+	peers := append([]string{}, p.peers...)
+	p.mu.RUnlock()
+
+	p.metaMu.RLock()
+	defer p.metaMu.RUnlock()
+
+	nodes := make([]PeerNode, 0, len(peers))
+	for _, u := range peers {
+		m := p.meta[u]
+		if m.Domains == nil {
+			m.Domains = []string{}
+		}
+		nodes = append(nodes, PeerNode{URL: u, Domains: m.Domains, AllowAll: m.AllowAll})
+	}
+	return nodes
 }
 
 // seenEntry tracks when an event was added to the seen set.
@@ -269,10 +312,23 @@ func fetchAndStoreBlock(base, fingerprint string, cfg SyncConfig) {
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return
 	}
-	validateAndStore(data, cfg)
+	validateAndStore(data, base, cfg)
 }
 
-func validateAndStore(data map[string]any, cfg SyncConfig) {
+// FetchBlockFromPeers tries each known peer to fetch and store a block by fingerprint.
+// Returns true if the block was successfully fetched from any peer.
+func FetchBlockFromPeers(peers *PeerList, fingerprint string, cfg SyncConfig) bool {
+	for _, peerURL := range peers.All() {
+		base := strings.TrimRight(peerURL, "/")
+		fetchAndStoreBlock(base, fingerprint, cfg)
+		if b, _ := cfg.Store.Get(fingerprint); b != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAndStore(data map[string]any, fetchBase string, cfg SyncConfig) {
 	armoredKey, _ := data["armored_key"].(string)
 	selfSig, _ := data["self_sig"].(string)
 	submitTS, _ := toInt64(data["submit_timestamp"])
@@ -314,7 +370,7 @@ func validateAndStore(data map[string]any, cfg SyncConfig) {
 	}
 
 	if sigChainRaw, ok := data["sig_chain"].([]any); ok {
-		applySigEntries(fp, sigChainRaw, cfg.Store)
+		applySigEntries(fp, sigChainRaw, fetchBase, cfg)
 	}
 }
 
@@ -329,11 +385,15 @@ func syncSigChain(base, fingerprint string, cfg SyncConfig) {
 		return
 	}
 	if sigChainRaw, ok := data["sig_chain"].([]any); ok {
-		applySigEntries(fingerprint, sigChainRaw, cfg.Store)
+		applySigEntries(fingerprint, sigChainRaw, base, cfg)
 	}
 }
 
-func applySigEntries(fingerprint string, sigChainRaw []any, st store.Store) {
+// applySigEntries verifies and stores sig chain entries from a peer.
+// fetchBase is the peer's base URL — used to fetch any signer blocks that are
+// not yet in the local store (can happen when sigs and blocks arrive out of order).
+func applySigEntries(fingerprint string, sigChainRaw []any, fetchBase string, cfg SyncConfig) {
+	st := cfg.Store
 	block, _ := st.Get(fingerprint)
 	if block == nil {
 		return
@@ -364,6 +424,11 @@ func applySigEntries(fingerprint string, sigChainRaw []any, st store.Store) {
 			signerKey = signerArmoredKey
 		} else {
 			signerBlock, _ := st.Get(signerFP)
+			if signerBlock == nil && fetchBase != "" {
+				// Signer block hasn't arrived yet — fetch it from the peer we're syncing with.
+				fetchAndStoreBlock(fetchBase, signerFP, cfg)
+				signerBlock, _ = st.Get(signerFP)
+			}
 			if signerBlock == nil {
 				continue
 			}
@@ -372,8 +437,10 @@ func applySigEntries(fingerprint string, sigChainRaw []any, st store.Store) {
 
 		payload := gpg.TrustPayload(block.Hash, signerFP, ts)
 		if !gpg.VerifyDetachedSig(payload, sig, signerKey) {
+			log.Printf("DEBUG applySigEntries: sig verify FAILED fp=%s signerFP=%s", fingerprint, signerFP)
 			continue
 		}
+		log.Printf("DEBUG applySigEntries: sig verify ok fp=%s signerFP=%s", fingerprint, signerFP)
 
 		computedHash := chain.ComputeSigEntryHash(prevHash, signerFP, sig, ts)
 		if claimedHash != "" && claimedHash != computedHash {

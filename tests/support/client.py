@@ -61,6 +61,10 @@ class APIClient:
         self.last_response = requests.get(self._url("/p2p/hashes"))
         return self.last_response
 
+    def trigger_sync(self):
+        self.last_response = requests.post(self._url("/p2p/sync"), json={})
+        return self.last_response
+
     def well_known(self):
         self.last_response = requests.get(self._url("/.well-known/gpgchain.json"))
         return self.last_response

@@ -253,10 +253,20 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/.well-known/gpgchain.json")
     async def well_known(request: Request):
         state = request.app.state
+        peer_nodes = [
+            {
+                "url": u,
+                "domains": state.peer_domains.get(u, {}).get("domains", []),
+                "allow_all": state.peer_domains.get(u, {}).get("allow_all", False),
+            }
+            for u in state.peer_list
+        ]
         return JSONResponse({
             "node_url": state.node_url,
             "domains": state.domains,
+            "allow_all": state.allow_all_domains,
             "peers": state.peer_list,
+            "peer_nodes": peer_nodes,
         })
 
     # --- Peer endpoints ---
@@ -316,6 +326,8 @@ def register_routes(app: FastAPI) -> None:
         if addr not in state.peer_list:
             state.peer_list.append(addr)
 
+        # Fetch peer's declared domains for discovery prioritisation
+        background_tasks.add_task(_fetch_peer_domains, addr, state.peer_domains)
         # Reciprocal registration + sync in the background
         if state.node_url:
             background_tasks.add_task(_register_self_with_peer, addr, state.node_url)
@@ -336,6 +348,14 @@ def register_routes(app: FastAPI) -> None:
             if block.hash == block_hash:
                 return JSONResponse(_block_to_dict(block))
         return _err("block not found", 404)
+
+    @app.post("/p2p/sync")
+    async def trigger_sync(request: Request, background_tasks: BackgroundTasks):
+        """Trigger immediate sync with all known peers (operational/testing endpoint)."""
+        state = request.app.state
+        for peer in list(state.peer_list):
+            background_tasks.add_task(state.sync.sync_with_peer, peer)
+        return JSONResponse({"ok": True})
 
     @app.post("/p2p/block")
     async def receive_block(request: Request, background_tasks: BackgroundTasks):
@@ -518,5 +538,19 @@ def _register_self_with_peer(peer_url: str, my_node_url: str) -> None:
             json={"addr": my_node_url},
             timeout=5.0,
         )
+    except Exception:
+        pass
+
+
+def _fetch_peer_domains(peer_url: str, peer_domains: dict) -> None:
+    """Non-fatal: fetch peer's /.well-known/gpgchain.json and cache its metadata."""
+    try:
+        r = httpx.get(f"{peer_url.rstrip('/')}/.well-known/gpgchain.json", timeout=5.0)
+        if r.status_code == 200:
+            data = r.json()
+            peer_domains[peer_url] = {
+                "domains": data.get("domains", []),
+                "allow_all": data.get("allow_all", False),
+            }
     except Exception:
         pass
