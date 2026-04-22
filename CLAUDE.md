@@ -191,7 +191,7 @@ Cross-ledger traversal is always client-initiated and client-controlled. Nodes n
 - **Gossip**: on receiving a new block, sig, or revocation, forward to K randomly selected peers (bounded fanout, default K=3); seen-set prevents loops; domain allowlist applied before forwarding
 - **Sync on connect**: exchange `{block_hash → SigChainHead}` maps with each peer; fetch and verify any missing blocks or sig chain entries
 - **Cross-validation**: periodically diff hash+head maps across all peers; warn on any discrepancy
-- No proof-of-work; validity is purely cryptographic
+- No competitive proof-of-work race (no mining, no longest-chain rule); validity is purely cryptographic — but GPG signing acts as proof-of-work for identity: forging a signature without the private key is computationally infeasible
 
 ---
 
@@ -353,12 +353,16 @@ The `.feature` files are portable — they can be run with any Cucumber-compatib
 # Stop all nodes
 ./scripts/cluster.sh stop
 
-# Client (either language, any node)
-gpgchain add    --server http://localhost:8080 --key pubkey.asc --keyid MYFINGERPRINT
-gpgchain sign   --server http://localhost:8082 --fingerprint ABCD1234 --keyid MYFINGERPRINT
-gpgchain list   --server http://localhost:8081 --keyid MYFINGERPRINT --min-trust 1
-gpgchain check  --server http://localhost:8080 --fingerprint ABCD1234 --keyid MYFINGERPRINT
-gpgchain verify --server http://localhost:8080
+# Client (Go binary — any node)
+gpgchain add     --server http://localhost:8080 --key pubkey.asc --privkey privkey.asc
+gpgchain show    --server http://localhost:8080 --fingerprint ABCD1234
+gpgchain sign    --server http://localhost:8082 --fingerprint ABCD1234 --keyid MYFINGERPRINT --privkey privkey.asc
+gpgchain revoke  --server http://localhost:8080 --fingerprint ABCD1234 --privkey privkey.asc
+gpgchain list    --server http://localhost:8081 --keyid MYFINGERPRINT --min-trust 1
+gpgchain check   --server http://localhost:8080 --fingerprint ABCD1234 --keyid MYFINGERPRINT
+gpgchain search  --server http://localhost:8080 --email alice@example.com
+gpgchain verify  --server http://localhost:8080
+gpgchain endorse --server http://localhost:8080 --keyid MYFINGERPRINT --privkey privkey.asc --threshold 2 --disjoint
 ```
 
 The cluster script wires all nodes together as peers. Any node can be used as the server target for any client command.

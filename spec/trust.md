@@ -171,3 +171,119 @@ The root fingerprint itself is always considered trusted (score = 1) if it is no
 ### Implementation Note for Efficient trusted_set
 
 For the common case of `threshold = 1`, a simple BFS from the root collecting all reachable non-revoked nodes within `max_depth` is sufficient. For `threshold > 1`, the multi-path counting in `score()` is required per target node.
+
+---
+
+## Vertex-Disjoint Path Scoring
+
+The standard `score()` function counts all distinct paths (paths visiting a different set of intermediate nodes). However, paths that share an intermediate node are not independent: if that shared node is compromised or colluded, all paths through it are compromised simultaneously.
+
+**Vertex-disjoint scoring** counts only the maximum number of paths that share no intermediate nodes (excluding root and target). This is a stronger measure of independence and is recommended when threshold > 1 and Sybil resistance matters.
+
+### Definition
+
+Two paths from root R to target T are **vertex-disjoint** if they share no intermediate nodes (nodes other than R and T themselves). The vertex-disjoint score is the maximum number of such pairwise vertex-disjoint paths.
+
+### Algorithm
+
+Vertex-disjoint path counting is equivalent to a maximum-flow problem. Use the standard **node-splitting** technique to enforce vertex capacity constraints:
+
+1. **Split each intermediate node** `v` into two nodes `v_in` and `v_out` with a directed edge `v_in → v_out` of capacity 1. This enforces that each intermediate node can be used by at most one path.
+2. **Root and target nodes** are not split (or are given infinite capacity).
+3. **Original edges** `u → v` become edges `u_out → v_in` with infinite capacity.
+4. Run **max-flow** from `root_out` to `target_in`.
+5. The max-flow value is the vertex-disjoint path count.
+
+```python
+def disjoint_score(target_fp, root_fp, graph, revoked_set, max_depth) -> int:
+    """
+    Count maximum vertex-disjoint paths from root_fp to target_fp within max_depth hops.
+    Uses node-splitting max-flow. Returns 0 for revoked targets or root == target.
+
+    graph       : dict mapping fingerprint -> list of fingerprints it has signed
+    revoked_set : set of revoked fingerprints
+    max_depth   : maximum number of hops from root to target (inclusive)
+    """
+    if target_fp in revoked_set:
+        return 0
+    if target_fp == root_fp:
+        return 0  # disjoint score is undefined for self; callers treat root as always trusted
+
+    # Collect reachable nodes within max_depth (standard BFS to bound the graph)
+    reachable = set()
+    queue = deque([(root_fp, 0)])
+    visited_bfs = {root_fp}
+    while queue:
+        node, depth = queue.popleft()
+        reachable.add(node)
+        if depth < max_depth:
+            for nbr in graph.get(node, []):
+                if nbr not in visited_bfs and nbr not in revoked_set:
+                    visited_bfs.add(nbr)
+                    queue.append((nbr, depth + 1))
+
+    if target_fp not in reachable:
+        return 0
+
+    # Build node-split flow network.
+    # Each node v (except root and target) becomes v+"_in" and v+"_out" with cap 1.
+    # Root and target have infinite internal capacity (modelled as cap = len(reachable)+1).
+    INF = len(reachable) + 1
+    capacity = {}  # (u, v) -> capacity
+
+    def add_edge(u, v, cap):
+        capacity[(u, v)] = capacity.get((u, v), 0) + cap
+        if (v, u) not in capacity:
+            capacity[(v, u)] = 0
+
+    for node in reachable:
+        if node == root_fp or node == target_fp:
+            add_edge(node + "_in", node + "_out", INF)
+        else:
+            add_edge(node + "_in", node + "_out", 1)
+        for nbr in graph.get(node, []):
+            if nbr in reachable and nbr not in revoked_set:
+                add_edge(node + "_out", nbr + "_in", INF)
+
+    source = root_fp + "_out"
+    sink   = target_fp + "_in"
+
+    # BFS-based max-flow (Edmonds-Karp)
+    def bfs_path(cap, src, snk):
+        parent = {src: None}
+        q = deque([src])
+        while q:
+            u = q.popleft()
+            if u == snk:
+                path, node = [], snk
+                while parent[node] is not None:
+                    path.append((parent[node], node))
+                    node = parent[node]
+                return path[::-1]
+            for (a, b), c in cap.items():
+                if a == u and b not in parent and c > 0:
+                    parent[b] = a
+                    q.append(b)
+        return None
+
+    flow = 0
+    while True:
+        path = bfs_path(capacity, source, sink)
+        if path is None:
+            break
+        bottleneck = min(capacity[e] for e in path)
+        for (u, v) in path:
+            capacity[(u, v)] -= bottleneck
+            capacity[(v, u)] += bottleneck
+        flow += bottleneck
+
+    return flow
+```
+
+### Key Properties
+
+- **Stronger independence guarantee:** A threshold of 2 with disjoint scoring means there are two genuinely independent trust paths — no single intermediate node can vouch for both.
+- **Sybil resistance:** An attacker who controls K nodes can create at most K colluding paths. Disjoint scoring with threshold T requires them to control at least T independent nodes, making Sybil attacks T times more expensive.
+- **Standard score vs disjoint score:** For threshold = 1, both algorithms are equivalent. For threshold ≥ 2, disjoint scoring is more conservative. Clients should document which algorithm they use.
+- **Computational cost:** O(V × E) where V and E are the vertices and edges of the reachable subgraph. In practice the ledger subgraph is small and this is fast.
+- **Root self-score:** The disjoint score of the root key with itself is not defined by this algorithm. Callers must treat the root as unconditionally trusted (as with the standard score).

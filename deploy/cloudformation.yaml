@@ -1,0 +1,589 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GPG Chain node on EC2.
+  BackendType=EBS  — Go implementation, SQLite database on an attached EBS volume.
+  BackendType=S3   — Python reference implementation, directory-tree store on an S3 bucket (mounted via s3fs-fuse).
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+
+Parameters:
+
+  BackendType:
+    Type: String
+    AllowedValues: [EBS, S3]
+    Default: EBS
+    Description: >
+      EBS: Go binary + SQLite on a dedicated EBS volume (recommended for production).
+      S3: Python reference implementation + directory-tree store on S3 via s3fs-fuse.
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - m6i.large
+      - m6i.xlarge
+    Description: EC2 instance type.
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 SSH key pair name for instance access.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy the instance into.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet (must have internet access for package downloads during setup).
+
+  AllowedDomains:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated email domains this node accepts (e.g. "example.com,sub.example.com").
+      Leave empty and set AllowAllDomains=true to accept keys from any domain.
+
+  AllowAllDomains:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >
+      Accept keys from any email domain. Must be true if AllowedDomains is empty.
+
+  NodeUrl:
+    Type: String
+    Default: ""
+    Description: >
+      Public URL of this node (e.g. https://keys.example.com).
+      Used in /.well-known/gpgchain.json for cross-ledger discovery.
+
+  BootstrapPeers:
+    Type: String
+    Default: ""
+    Description: Comma-separated peer node URLs to connect to at startup.
+
+  ListenPort:
+    Type: Number
+    Default: 8080
+    MinValue: 1024
+    MaxValue: 65535
+    Description: TCP port the GPG Chain HTTP API listens on.
+
+  HttpAccessCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: CIDR allowed to reach the HTTP API port. Restrict for private nodes.
+
+  SshAccessCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: CIDR allowed SSH access. Recommend restricting to your IP.
+
+  RepoUrl:
+    Type: String
+    Default: "https://github.com/aug24/gpg-chain"
+    Description: Git URL of the gpg-chain repository (cloned on the instance to build from source).
+
+  # ---- EBS-specific --------------------------------------------------------
+
+  EbsVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    MaxValue: 16384
+    Description: EBS data volume size in GiB (EBS backend only).
+
+  EbsVolumeType:
+    Type: String
+    Default: gp3
+    AllowedValues: [gp3, gp2, io1, io2]
+    Description: EBS volume type (EBS backend only).
+
+  # ---- S3-specific ---------------------------------------------------------
+
+  S3BucketName:
+    Type: String
+    Default: ""
+    Description: >
+      S3 bucket name for the block store (S3 backend only).
+      Leave empty to create a new bucket named {StackName}-gpgchain-data.
+      Provide an existing bucket name to reuse it (the node's IAM role will be granted access).
+
+# ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Backend" }
+        Parameters: [BackendType]
+      - Label: { default: "Instance" }
+        Parameters: [InstanceType, KeyName, VpcId, SubnetId]
+      - Label: { default: "Node configuration" }
+        Parameters: [AllowedDomains, AllowAllDomains, NodeUrl, BootstrapPeers, ListenPort]
+      - Label: { default: "Network access" }
+        Parameters: [HttpAccessCidr, SshAccessCidr]
+      - Label: { default: "EBS backend" }
+        Parameters: [EbsVolumeSize, EbsVolumeType]
+      - Label: { default: "S3 backend" }
+        Parameters: [S3BucketName]
+      - Label: { default: "Source" }
+        Parameters: [RepoUrl]
+
+# ---------------------------------------------------------------------------
+# Conditions
+# ---------------------------------------------------------------------------
+
+Conditions:
+  UseEBS:         !Equals [!Ref BackendType, EBS]
+  UseS3:          !Equals [!Ref BackendType, S3]
+  CreateS3Bucket: !And
+    - !Condition UseS3
+    - !Equals [!Ref S3BucketName, ""]
+
+# ---------------------------------------------------------------------------
+# No Mappings needed — AMI is resolved dynamically via SSM Parameter Store
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+Resources:
+
+  # --------------------------------------------------------------------------
+  # IAM
+  # --------------------------------------------------------------------------
+
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-node-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: GPGChainS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # S3 access for the block store (S3 backend) or binary downloads (either backend)
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  # Grant access to the effective bucket.
+                  # For S3 backend with auto-created bucket: stack-prefixed name.
+                  # For S3 backend with provided bucket: user-supplied name.
+                  # For EBS backend: these actions are harmless (bucket doesn't exist).
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}"
+                    - Bucket: !If
+                        - CreateS3Bucket
+                        - !Sub "${AWS::StackName}-gpgchain-data"
+                        - !If
+                          - UseS3
+                          - !Ref S3BucketName
+                          - !Sub "${AWS::StackName}-no-bucket"
+                  - !Sub
+                    - "arn:aws:s3:::${Bucket}/*"
+                    - Bucket: !If
+                        - CreateS3Bucket
+                        - !Sub "${AWS::StackName}-gpgchain-data"
+                        - !If
+                          - UseS3
+                          - !Ref S3BucketName
+                          - !Sub "${AWS::StackName}-no-bucket"
+
+  NodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-node-profile"
+      Roles: [!Ref NodeRole]
+
+  # --------------------------------------------------------------------------
+  # S3 bucket (S3 backend, auto-create case only)
+  # --------------------------------------------------------------------------
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-gpgchain-data"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
+  # --------------------------------------------------------------------------
+  # Security group
+  # --------------------------------------------------------------------------
+
+  NodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "GPG Chain node (${AWS::StackName})"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshAccessCidr
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: !Ref ListenPort
+          ToPort: !Ref ListenPort
+          CidrIp: !Ref HttpAccessCidr
+          Description: GPG Chain HTTP API
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: "0.0.0.0/0"
+          Description: All outbound
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-gpgchain-sg"
+
+  # --------------------------------------------------------------------------
+  # EC2 instance
+  # --------------------------------------------------------------------------
+
+  NodeInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M  # 15 minutes; EBS backend may need time for volume attachment
+    Properties:
+      InstanceType: !Ref InstanceType
+      # Always resolves to the latest Amazon Linux 2023 x86_64 AMI in the current region
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref NodeInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: [!Ref NodeSecurityGroup]
+      BlockDeviceMappings:
+        # Root volume
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-gpgchain"
+        - Key: BackendType
+          Value: !Ref BackendType
+      UserData:
+        Fn::Base64:
+          !If
+            - UseEBS
+
+            # ==================================================================
+            # EBS backend — Go implementation + SQLite
+            # ==================================================================
+            - !Sub |
+                #!/bin/bash
+                set -euo pipefail
+                exec > >(tee /var/log/gpgchain-setup.log | logger -t gpgchain-setup 2>&1) 2>&1
+
+                echo "=== GPG Chain setup: EBS/Go backend ==="
+
+                # System packages
+                dnf update -y
+                dnf install -y git wget tar gzip
+
+                # Install Go 1.22
+                GO_VERSION=1.22.4
+                wget -q "https://go.dev/dl/go${!GO_VERSION}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
+                tar -C /usr/local -xzf /tmp/go.tar.gz
+                rm /tmp/go.tar.gz
+                export PATH=$PATH:/usr/local/go/bin
+                echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
+
+                # Clone repo and build node binary
+                git clone "${RepoUrl}" /opt/gpg-chain
+                cd /opt/gpg-chain/implementations/go
+                CGO_ENABLED=0 go build -o /usr/local/bin/gpgchain-node ./cmd/node/
+                chmod +x /usr/local/bin/gpgchain-node
+
+                # Create service user
+                useradd -r -s /bin/false gpgchain || true
+
+                # Wait for the EBS data volume to be attached (attached after instance is up)
+                echo "Waiting for EBS data volume /dev/nvme1n1 (or /dev/xvdf)..."
+                DATA_DEV=""
+                for i in $(seq 1 60); do
+                    if [ -b /dev/nvme1n1 ]; then DATA_DEV=/dev/nvme1n1; break; fi
+                    if [ -b /dev/xvdf ];    then DATA_DEV=/dev/xvdf;    break; fi
+                    echo "  attempt $i/60, sleeping 5s..."
+                    sleep 5
+                done
+                if [ -z "$DATA_DEV" ]; then
+                    echo "ERROR: data volume not found after 300s. Aborting." >&2
+                    exit 1
+                fi
+                echo "Data volume found at $DATA_DEV"
+
+                # Format (if new) and mount
+                if ! blkid "$DATA_DEV" | grep -q ext4; then
+                    echo "Formatting $DATA_DEV as ext4..."
+                    mkfs.ext4 -L gpgchain-data "$DATA_DEV"
+                fi
+                mkdir -p /var/lib/gpgchain
+                echo "LABEL=gpgchain-data /var/lib/gpgchain ext4 defaults,nofail 0 2" >> /etc/fstab
+                mount /var/lib/gpgchain
+                chown gpgchain:gpgchain /var/lib/gpgchain
+
+                # Build optional flags
+                EXTRA_ARGS=""
+                if [ "${AllowAllDomains}" = "true" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --allow-all-domains"
+                fi
+                if [ -n "${AllowedDomains}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --domains '${AllowedDomains}'"
+                fi
+                if [ -n "${NodeUrl}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --node-url '${NodeUrl}'"
+                fi
+                if [ -n "${BootstrapPeers}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --peers '${BootstrapPeers}'"
+                fi
+
+                # systemd service
+                cat > /etc/systemd/system/gpgchain.service << SVCEOF
+                [Unit]
+                Description=GPG Chain node (Go/EBS)
+                After=network.target var-lib-gpgchain.mount
+
+                [Service]
+                Type=simple
+                User=gpgchain
+                ExecStart=/usr/local/bin/gpgchain-node \
+                    --addr 0.0.0.0:${ListenPort} \
+                    --store /var/lib/gpgchain/chain.db \
+                    $EXTRA_ARGS
+                Restart=on-failure
+                RestartSec=5s
+                StandardOutput=journal
+                StandardError=journal
+
+                [Install]
+                WantedBy=multi-user.target
+                SVCEOF
+
+                systemctl daemon-reload
+                systemctl enable gpgchain
+                systemctl start gpgchain
+
+                echo "=== GPG Chain EBS/Go setup complete ==="
+
+                # Signal CloudFormation that setup succeeded
+                /opt/aws/bin/cfn-signal -e $? \
+                    --stack "${AWS::StackName}" \
+                    --resource NodeInstance \
+                    --region "${AWS::Region}"
+
+            # ==================================================================
+            # S3 backend — Python reference implementation + s3fs-fuse
+            # ==================================================================
+            - !Sub
+              - |
+                #!/bin/bash
+                set -euo pipefail
+                exec > >(tee /var/log/gpgchain-setup.log | logger -t gpgchain-setup 2>&1) 2>&1
+
+                echo "=== GPG Chain setup: S3/Python backend ==="
+
+                # System packages
+                dnf update -y
+                dnf install -y git python3.11 python3.11-pip fuse fuse-devel
+
+                # Install s3fs-fuse from EPEL or build from source
+                dnf install -y epel-release 2>/dev/null || true
+                if ! dnf install -y s3fs-fuse 2>/dev/null; then
+                    # Build s3fs from source if not available in repos
+                    dnf install -y gcc-c++ libstdc++-devel libcurl-devel libxml2-devel openssl-devel automake
+                    git clone --depth 1 https://github.com/s3fs-fuse/s3fs-fuse.git /tmp/s3fs-fuse
+                    cd /tmp/s3fs-fuse
+                    ./autogen.sh
+                    ./configure --prefix=/usr/local
+                    make -j$(nproc)
+                    make install
+                fi
+
+                # Clone repo and install Python package
+                git clone "${RepoUrl}" /opt/gpg-chain
+                pip3.11 install -e /opt/gpg-chain/implementations/python/
+
+                # Create service user
+                useradd -r -s /bin/false gpgchain || true
+
+                # Mount S3 bucket via s3fs
+                BUCKET="${EffectiveBucketName}"
+                mkdir -p /var/lib/gpgchain
+                chown gpgchain:gpgchain /var/lib/gpgchain
+
+                # Add to fstab and mount now
+                echo "s3fs#$BUCKET /var/lib/gpgchain fuse _netdev,allow_other,iam_role=auto,use_path_request_style,url=https://s3.${AWS::Region}.amazonaws.com 0 0" >> /etc/fstab
+                echo "user_allow_other" >> /etc/fuse.conf
+                mount /var/lib/gpgchain
+
+                # Build optional flags
+                EXTRA_ARGS=""
+                if [ "${AllowAllDomains}" = "true" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --allow-all-domains"
+                fi
+                if [ -n "${AllowedDomains}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --domains '${AllowedDomains}'"
+                fi
+                if [ -n "${NodeUrl}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --node-url '${NodeUrl}'"
+                fi
+                if [ -n "${BootstrapPeers}" ]; then
+                    EXTRA_ARGS="$EXTRA_ARGS --peers '${BootstrapPeers}'"
+                fi
+
+                # systemd service
+                cat > /etc/systemd/system/gpgchain.service << SVCEOF
+                [Unit]
+                Description=GPG Chain node (Python/S3)
+                After=network.target
+
+                [Service]
+                Type=simple
+                User=gpgchain
+                WorkingDirectory=/opt/gpg-chain/implementations/python
+                ExecStart=/usr/bin/python3.11 node.py \
+                    --addr 0.0.0.0:${ListenPort} \
+                    --store-dir /var/lib/gpgchain \
+                    $EXTRA_ARGS
+                Restart=on-failure
+                RestartSec=5s
+                StandardOutput=journal
+                StandardError=journal
+
+                [Install]
+                WantedBy=multi-user.target
+                SVCEOF
+
+                systemctl daemon-reload
+                systemctl enable gpgchain
+                systemctl start gpgchain
+
+                echo "=== GPG Chain S3/Python setup complete ==="
+
+                # Signal CloudFormation that setup succeeded
+                /opt/aws/bin/cfn-signal -e $? \
+                    --stack "${AWS::StackName}" \
+                    --resource NodeInstance \
+                    --region "${AWS::Region}"
+
+              - EffectiveBucketName: !If
+                  - CreateS3Bucket
+                  - !Sub "${AWS::StackName}-gpgchain-data"
+                  - !Ref S3BucketName
+
+  # --------------------------------------------------------------------------
+  # EBS data volume (EBS backend only)
+  # The volume is created after the instance and then attached.
+  # The UserData startup script waits for the device to appear.
+  # --------------------------------------------------------------------------
+
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Condition: UseEBS
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt NodeInstance.AvailabilityZone
+      Size: !Ref EbsVolumeSize
+      VolumeType: !Ref EbsVolumeType
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-gpgchain-data"
+        - Key: Stack
+          Value: !Ref AWS::StackName
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Condition: UseEBS
+    Properties:
+      InstanceId: !Ref NodeInstance
+      VolumeId: !Ref DataVolume
+      Device: /dev/xvdf
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+
+Outputs:
+
+  InstanceId:
+    Description: EC2 instance ID.
+    Value: !Ref NodeInstance
+
+  PrivateIp:
+    Description: Private IP address of the node.
+    Value: !GetAtt NodeInstance.PrivateIp
+
+  PublicIp:
+    Description: Public IP address of the node.
+    Value: !GetAtt NodeInstance.PublicIp
+
+  NodeEndpoint:
+    Description: GPG Chain HTTP API base URL.
+    Value: !Sub "http://${NodeInstance.PublicIp}:${ListenPort}"
+
+  WellKnownUrl:
+    Description: Node discovery endpoint.
+    Value: !Sub "http://${NodeInstance.PublicIp}:${ListenPort}/.well-known/gpgchain.json"
+
+  DataVolumeId:
+    Condition: UseEBS
+    Description: EBS data volume ID.
+    Value: !Ref DataVolume
+
+  DataBucketName:
+    Condition: CreateS3Bucket
+    Description: S3 bucket created for block storage.
+    Value: !Ref DataBucket
+
+  SetupLog:
+    Description: View setup log on the instance.
+    Value: !Sub "ssh ec2-user@${NodeInstance.PublicIp} 'sudo journalctl -u gpgchain-setup -f || sudo cat /var/log/gpgchain-setup.log'"
+
+  ServiceStatus:
+    Description: Check node service status.
+    Value: !Sub "ssh ec2-user@${NodeInstance.PublicIp} 'sudo systemctl status gpgchain'"
+
+  QuickTest:
+    Description: Smoke-test the node API.
+    Value: !Sub "curl http://${NodeInstance.PublicIp}:${ListenPort}/.well-known/gpgchain.json"

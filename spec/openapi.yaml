@@ -821,7 +821,9 @@ components:
       required:
         - node_url
         - domains
+        - allow_all
         - peers
+        - peer_nodes
       properties:
         node_url:
           type: string
@@ -832,18 +834,59 @@ components:
           type: array
           description: |
             Email domains whose keys this node accepts. Corresponds to the node's domain
-            allowlist configuration.
+            allowlist configuration. Empty when allow_all is true.
           items:
             type: string
           example: ["example.com", "subsidiary.example.com"]
+        allow_all:
+          type: boolean
+          description: |
+            True if this node accepts keys from any email domain (allow_all mode).
+            When true, the domains array may be empty.
+          example: false
         peers:
           type: array
           description: |
-            URLs of known peer nodes. Allows clients to discover the broader network.
+            URLs of known peer nodes. Flat list of peer URLs for simple discovery.
           items:
             type: string
             format: uri
           example: ["https://keys.partner.org"]
+        peer_nodes:
+          type: array
+          description: |
+            Structured metadata for each known peer node. Provides domain and allow_all
+            information so clients can route cross-ledger lookups without an additional
+            /.well-known/ fetch per peer.
+          items:
+            $ref: "#/components/schemas/PeerNodeInfo"
+
+    PeerNodeInfo:
+      type: object
+      description: Metadata about a single peer node, as known by the advertising node.
+      required:
+        - url
+        - domains
+        - allow_all
+      properties:
+        url:
+          type: string
+          format: uri
+          description: The peer's canonical URL.
+          example: "https://keys.partner.org"
+        domains:
+          type: array
+          description: |
+            Email domains accepted by this peer, as last reported by the peer's
+            /.well-known/gpgchain.json. May be stale; clients should re-verify if
+            freshness matters.
+          items:
+            type: string
+          example: ["partner.org"]
+        allow_all:
+          type: boolean
+          description: Whether this peer accepts keys from any email domain.
+          example: false
 
     HashesResponse:
       type: object

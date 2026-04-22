@@ -10,6 +10,7 @@ This guide walks a new developer through cloning the repository, setting up the 
 |---|---|---|
 | Python | 3.11 | 3.11 or 3.12 recommended; see note below for 3.13+ |
 | pip | any recent | used to install Python deps |
+| Go | 1.21 | only needed to build the Go implementation |
 | Docker + Compose | Docker 24 / Compose v2 | only needed for multi-node integration tests |
 
 > **Python 3.13+ compatibility note** — `pgpy 0.6.0` imports the `imghdr` standard-library module which was removed in Python 3.13. On Python 3.13 or 3.14 you need to patch the installed package once after `pip install`:
@@ -83,11 +84,31 @@ GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/
 Expected output (numbers may vary as new scenarios are added):
 
 ```
-11 features passed, 0 failed, 3 skipped
-56 scenarios passed, 0 failed, 23 skipped
+13 features passed, 0 failed, 3 skipped
+70 scenarios passed, 0 failed, 23 skipped
 ```
 
 The skipped scenarios require two or more nodes (gossip, sync, cross-validation) and are covered by the Docker Compose integration tests in section 5.
+
+### Running the Go CLI tests
+
+CLI-specific scenarios are tagged `@cli` and require the Go binary to be built. They are skipped automatically when the binary is not found.
+
+```bash
+./scripts/build.sh
+
+# Run all tests including CLI scenarios
+GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/
+
+# Run only CLI scenarios
+GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/ --tags=@cli
+```
+
+Alternatively, point to a pre-built binary:
+
+```bash
+GPGCHAIN_CLIENT=/path/to/gpgchain GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/
+```
 
 ### Running a specific feature
 
@@ -129,7 +150,10 @@ gpg-chain/
       requirements.txt    All runtime + test dependencies
       pyproject.toml      Package metadata
 
-    go/                   Production implementation (not yet complete)
+    go/                   Production implementation (Go, complete)
+      cmd/
+        node/             Go node binary
+        client/           Go CLI client (gpgchain)
 
   tests/
     features/             Gherkin .feature files — language-agnostic
@@ -236,10 +260,14 @@ http://localhost:8080/docs
 
 Or browse `spec/openapi.yaml` directly for the canonical definition.
 
-Quick examples:
+Quick examples using the Go CLI (see `docs/cli-reference.md` for full details):
 
 ```bash
-# Add a key (you need a real self-signature — use the CLI client)
+# Add your key
+gpgchain add --server http://localhost:8080 \
+    --key pubkey.asc --privkey privkey.asc
+
+# Or use the Python client
 python implementations/python/client.py add \
     --server http://localhost:8080 \
     --key pubkey.asc \
@@ -280,3 +308,17 @@ See `docs/new-implementation.md` for a full guide.  The short version:
 1. Implement the HTTP API defined in `spec/openapi.yaml`.
 2. Point the test suite at your server: `GPGCHAIN_TEST_SERVER=http://localhost:9000 behave tests/`.
 3. All scenarios in `tests/features/` must pass.  The feature files are the compliance specification.
+
+---
+
+## 10 — Further reading
+
+| Document | Contents |
+|---|---|
+| `docs/cli-reference.md` | All nine CLI commands with every flag, example, and exit code |
+| `docs/user-guide.md` | End-to-end walkthrough for a new participant |
+| `docs/operator-guide.md` | Production deployment, configuration, monitoring |
+| `docs/trust-guide.md` | Choosing depth, threshold, and scoring mode |
+| `docs/architecture.md` | Internal design of both implementations |
+| `docs/NEWBIE.md` | Blockchain concepts explained for newcomers |
+| `docs/new-implementation.md` | Guide for writing a third-language implementation |

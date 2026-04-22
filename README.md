@@ -8,15 +8,30 @@ Designed for key discovery: given your own key as a root of trust, you can find 
 
 - **[Getting started](docs/getting-started.md)** — install, run a node, run the tests
 - **[How it works](docs/overview.md)** — concepts, architecture, design decisions
+- **[CLI reference](docs/cli-reference.md)** — all client commands, flags, and exit codes
+- **[User guide](docs/user-guide.md)** — practical walkthrough for participants
+- **[Operator guide](docs/operator-guide.md)** — running a production node
+- **[Trust guide](docs/trust-guide.md)** — choosing thresholds and understanding trust scoring
+- **[Architecture](docs/architecture.md)** — internal design of both implementations
+- **[For newcomers](docs/NEWBIE.md)** — why blockchain for key distribution, explained simply
 - **[Specifications](spec/)** — canonical definitions of the API, data model, signing payloads, trust algorithm, and P2P protocol
 
 ## At a glance
 
-```
-# Start a node
+```bash
+# Build the Go binary
+./scripts/build.sh
+
+# Start a node (Go)
+./implementations/go/cmd/node/node --allow-all-domains
+
+# Or start the Python reference node
 python implementations/python/node.py --allow-all-domains
 
-# Run the test suite against it
+# Add your key
+gpgchain add --server http://localhost:8080 --key pubkey.asc --privkey privkey.asc
+
+# Run the test suite
 GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/
 
 # Run multi-node integration tests (requires Docker)
@@ -28,6 +43,6 @@ GPGCHAIN_TEST_SERVER=http://localhost:8080 behave tests/
 | Language | Location | Status |
 |---|---|---|
 | Python | `implementations/python/` | Reference — complete |
-| Go | `implementations/go/` | In progress |
+| Go | `implementations/go/` | Complete |
 
-Both implementations conform to the same HTTP API (`spec/openapi.yaml`) and pass the same Gherkin test suite (`tests/features/`).
+Both implementations conform to the same HTTP API (`spec/openapi.yaml`) and pass the same Gherkin test suite (`tests/features/`). The Go implementation includes a full CLI client (`gpgchain`) with nine commands.

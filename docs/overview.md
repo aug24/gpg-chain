@@ -74,7 +74,7 @@ The client's trust model:
 
 ## The ledger
 
-The ledger is a **content-addressed DAG** — not a blockchain. There is no proof-of-work, no longest-chain rule, and no global ordering. Valid state is the union of all independently verifiable blocks across all peers.
+The ledger is a **content-addressed DAG** — there is no longest-chain rule and no global ordering. Valid state is the union of all independently verifiable blocks across all peers.
 
 - Two nodes can have different subsets of blocks; sync exchanges what each is missing.
 - A block is valid if its self-signature verifies, all referenced SigEntries are present and hash-linked correctly, and the key's UIDs satisfy the node's domain allowlist.
@@ -139,7 +139,7 @@ The **Python implementation** (`implementations/python/`) is the reference. It i
 - **pgpy** for all OpenPGP operations (no `gpg` subprocess, no gpg-agent)
 - A **directory tree store** — one JSON file per block, one per SigEntry, one per revocation — with an LRU cache in front
 
-The **Go implementation** (`implementations/go/`) targets production use: lower memory, faster startup, SQLite-backed store, concurrent gossip.
+The **Go implementation** (`implementations/go/`) targets production use: lower memory, faster startup, SQLite-backed store, concurrent gossip. It also ships the `gpgchain` CLI client with nine commands covering all ledger operations and local trust evaluation.
 
 Both implementations must pass the same Gherkin test suite in `tests/features/`. The feature files are the compliance specification; if a scenario contradicts the spec, the spec wins.
 
