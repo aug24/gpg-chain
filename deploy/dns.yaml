@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Permanent DNS layer for a GPG Chain node.
+  Owns the Elastic IP and the Route 53 A record. Deploy this stack once and
+  leave it running. The EC2 stack (cloudformation.yaml) imports the Elastic IP
+  and associates it on deploy, releasing it on delete — so you can drop the
+  expensive infrastructure when not in use without disturbing DNS.
+
+  Note: an unassociated Elastic IP costs ~$0.005/hour (~$0.84/month).
+
+Parameters:
+
+  DomainName:
+    Type: String
+    Description: Fully-qualified domain name for this node (e.g. demo.gpgchain.co.uk).
+
+  HostedZoneId:
+    Type: String
+    Description: Route 53 Hosted Zone ID that contains DomainName (e.g. Z1PA6795UKMFR9).
+
+  TTL:
+    Type: Number
+    Default: 300
+    Description: DNS record TTL in seconds.
+
+Resources:
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    DeletionPolicy: Delete
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name,  Value: !Sub "${AWS::StackName}-eip" }
+        - { Key: Domain, Value: !Ref DomainName }
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${DomainName}."
+      Type: A
+      TTL: !Ref TTL
+      ResourceRecords:
+        - !Ref ElasticIP
+
+Outputs:
+
+  ElasticIp:
+    Description: The Elastic IP address. DNS A record points here.
+    Value: !Ref ElasticIP
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticIp"
+
+  ElasticIpAllocationId:
+    Description: Allocation ID — imported by the EC2 stack to associate the instance.
+    Value: !GetAtt ElasticIP.AllocationId
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticIpAllocationId"
+
+  DomainName:
+    Description: The domain name this stack manages.
+    Value: !Ref DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-DomainName"
