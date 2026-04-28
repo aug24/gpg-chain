@@ -15,8 +15,10 @@ The DNS stack owns the Elastic IP and Route 53 record. The node stack owns the E
 
 - AWS CLI configured with a named profile
 - A Route 53 hosted zone for your domain
-- An EC2 key pair in your target region
 - `jq` installed locally
+
+Shell access to the instance is via AWS SSM Session Manager — no SSH key pair or open port 22 required.
+Install the SSM plugin if you want interactive shell access: `aws ssm start-session --target <instance-id>`.
 
 ---
 
@@ -27,7 +29,8 @@ The DNS stack owns the Elastic IP and Route 53 record. The node stack owns the E
 ```bash
 ./scripts/deploy-dns.sh \
     --domain keys.example.com \
-    --profile myprofile
+    --profile myprofile \
+    --region eu-west-2
 ```
 
 The script looks up the Route 53 hosted zone automatically by walking up the domain hierarchy.
@@ -39,22 +42,20 @@ This creates an Elastic IP and a Route 53 A record. Run once and leave it runnin
 
 ```bash
 ./scripts/deploy-node.sh \
-    --domain demo.gpgchain.co.uk \
+    --domain keys.example.com \
     --profile myprofile \
+    --region eu-west-2 \
     --allow-all-domains \
-    --key-name my-key \
-    --vpc-id vpc-xxxx \
-    --subnet-id subnet-xxxx \
     --letsencrypt-email you@example.com
 ```
 
-The node will be live at `https://demo.gpgchain.co.uk` once DNS has propagated and Caddy has obtained the TLS certificate (typically 2–5 minutes).
+The node will be live at `https://keys.example.com` once DNS has propagated and Caddy has obtained the TLS certificate (typically 2–5 minutes).
 
 ### 3. Check status
 
 ```bash
 ./scripts/node-status.sh \
-    --domain demo.gpgchain.co.uk \
+    --domain keys.example.com \
     --profile myprofile
 ```
 
@@ -65,17 +66,16 @@ The node will be live at `https://demo.gpgchain.co.uk` once DNS has propagated a
 ```bash
 # Stop (deletes EC2 instance — data and DNS are preserved)
 ./scripts/stop-node.sh \
-    --domain demo.gpgchain.co.uk \
-    --profile myprofile
+    --domain keys.example.com \
+    --profile myprofile \
+    --region eu-west-2
 
 # Start again (data is immediately available from S3)
 ./scripts/deploy-node.sh \
-    --domain demo.gpgchain.co.uk \
+    --domain keys.example.com \
     --profile myprofile \
-    --allow-all-domains \
-    --key-name my-key \
-    --vpc-id vpc-xxxx \
-    --subnet-id subnet-xxxx
+    --region eu-west-2 \
+    --allow-all-domains
 ```
 
 ---
@@ -101,10 +101,10 @@ All scripts accept `--help` for full flag documentation.
 |---|---|---|
 | `--domain` | yes | FQDN for the node |
 | `--profile` | yes | AWS CLI profile |
+| `--region` | yes | AWS region (e.g. `eu-west-2`) |
 | `--hosted-zone-id` | no | Route 53 hosted zone ID — looked up automatically if omitted |
 | `--ttl` | no | DNS TTL in seconds (default: 300) |
 | `--stack-prefix` | no | Stack name prefix (default: gpgchain) |
-| `--region` | no | AWS region (default: profile default) |
 
 ### deploy-node.sh
 
@@ -112,16 +112,13 @@ All scripts accept `--help` for full flag documentation.
 |---|---|---|
 | `--domain` | yes | FQDN matching the DNS stack |
 | `--profile` | yes | AWS CLI profile |
-| `--key-name` | yes | EC2 key pair name |
-| `--vpc-id` | yes | VPC to deploy into |
-| `--subnet-id` | yes | Public subnet ID |
+| `--region` | yes | AWS region (e.g. `eu-west-2`) |
 | `--allow-all-domains` | * | Accept keys from any email domain |
 | `--allowed-domains` | * | Comma-separated allowed domains |
 | `--letsencrypt-email` | no | Email for cert expiry notifications |
 | `--instance-type` | no | EC2 instance type (default: t3.small) |
 | `--bootstrap-peers` | no | Comma-separated peer node URLs |
 | `--s3-bucket` | no | Existing S3 bucket (default: auto-create) |
-| `--ssh-cidr` | no | CIDR for SSH access (default: 0.0.0.0/0) |
 | `--stack-prefix` | no | Stack name prefix (default: gpgchain) |
 | `--region` | no | AWS region (default: profile default) |
 

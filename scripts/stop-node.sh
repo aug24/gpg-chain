@@ -10,18 +10,18 @@ set -euo pipefail
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --domain DOMAIN --profile PROFILE [options]
+Usage: $(basename "$0") --domain DOMAIN --profile PROFILE --region REGION [options]
 
 Deletes the node stack. The DNS stack, Elastic IP, and S3 block store
 are retained — redeploy at any time with deploy-node.sh.
 
 Required:
-  --domain DOMAIN    FQDN matching the node stack (e.g. demo.gpgchain.co.uk)
+  --domain DOMAIN    FQDN matching the node stack (e.g. keys.example.com)
   --profile PROFILE  AWS CLI profile name
+  --region REGION    AWS region (e.g. eu-west-2)
 
 Optional:
   --stack-prefix PREFIX  Stack name prefix (default: gpgchain)
-  --region REGION        AWS region (default: profile default)
   --yes                  Skip confirmation prompt
   -h, --help
 EOF
@@ -58,6 +58,8 @@ info()    { echo "  [info]  $*"; }
 fail()    { echo "  [error] $*" >&2; exit 1; }
 missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
 
+trap 'echo "" >&2; echo "  [error] Script failed on line $LINENO — see output above for details." >&2' ERR
+
 aws_cmd() {
     local args=(--profile "$PROFILE")
     [ -n "$REGION" ] && args+=(--region "$REGION")
@@ -76,6 +78,7 @@ ok "aws CLI and jq found"
 echo "==> Checking required parameters"
 [ -z "$DOMAIN"  ] && missing "--domain"
 [ -z "$PROFILE" ] && missing "--profile"
+[ -z "$REGION"  ] && missing "--region"
 ok "Domain:  $DOMAIN"
 ok "Profile: $PROFILE"
 
@@ -94,7 +97,7 @@ case "$NODE_STATUS" in
     DOES_NOT_EXIST)
         info "Stack $NODE_STACK does not exist — nothing to do"
         exit 0 ;;
-    CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
+    CREATE_COMPLETE|UPDATE_COMPLETE|UPDATE_ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)
         ok "Stack $NODE_STACK is $NODE_STATUS" ;;
     DELETE_IN_PROGRESS)
         fail "Stack $NODE_STACK is already being deleted" ;;
@@ -144,4 +147,4 @@ aws_cmd cloudformation wait stack-delete-complete --stack-name "$NODE_STACK"
 echo ""
 echo "Node stack deleted. Your data in S3 and your DNS record are intact."
 echo "Bring it back up with:"
-echo "  ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE ..."
+echo "  ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE --region $REGION --allow-all-domains"

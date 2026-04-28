@@ -9,15 +9,15 @@ set -euo pipefail
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --domain DOMAIN --profile PROFILE [options]
+Usage: $(basename "$0") --domain DOMAIN --profile PROFILE --region REGION [options]
 
 Required:
-  --domain DOMAIN    FQDN of the node (e.g. demo.gpgchain.co.uk)
+  --domain DOMAIN    FQDN of the node (e.g. keys.example.com)
   --profile PROFILE  AWS CLI profile name
+  --region REGION    AWS region (e.g. eu-west-2)
 
 Optional:
   --stack-prefix PREFIX  Stack name prefix (default: gpgchain)
-  --region REGION        AWS region (default: profile default)
   -h, --help
 EOF
 }
@@ -53,6 +53,8 @@ info()    { echo "  [info]    $*"; }
 warn()    { echo "  [warn]    $*"; }
 fail()    { echo "  [error]   $*" >&2; exit 1; }
 missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
+
+trap 'echo "" >&2; echo "  [error] Script failed on line $LINENO — see output above for details." >&2' ERR
 row()  { printf "  %-18s %s\n" "$1" "$2"; }
 
 aws_cmd() {
@@ -81,6 +83,7 @@ stack_output() {
 
 [ -z "$DOMAIN"  ] && missing "--domain"
 [ -z "$PROFILE" ] && missing "--profile"
+[ -z "$REGION"  ] && missing "--region"
 
 command -v aws  >/dev/null 2>&1 || fail "aws CLI not found"
 command -v jq   >/dev/null 2>&1 || fail "jq not found"
@@ -160,8 +163,7 @@ case "$NODE_STATUS" in
         info "Node stack not deployed (DNS and S3 data are intact)"
         echo ""
         echo "  Start the node with:"
-        echo "    ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE \\"
-        echo "      --key-name <KEY> --vpc-id <VPC> --subnet-id <SUBNET>"
+        echo "    ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE --allow-all-domains"
         ;;
     DELETE_IN_PROGRESS)
         info "Node stack is being deleted..." ;;

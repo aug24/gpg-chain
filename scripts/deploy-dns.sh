@@ -10,17 +10,17 @@ set -euo pipefail
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --domain DOMAIN --profile PROFILE [options]
+Usage: $(basename "$0") --domain DOMAIN --profile PROFILE --region REGION [options]
 
 Required:
   --domain DOMAIN           FQDN for this node (e.g. keys.example.com)
   --profile PROFILE         AWS CLI profile name
+  --region REGION           AWS region (e.g. eu-west-2)
 
 Optional:
   --hosted-zone-id ZONE_ID  Route 53 Hosted Zone ID — looked up automatically if omitted
   --stack-prefix PREFIX     Stack name prefix (default: gpgchain)
   --ttl TTL                 DNS TTL in seconds (default: 300)
-  --region REGION           AWS region (default: profile default)
   -h, --help
 EOF
 }
@@ -61,6 +61,8 @@ info()    { echo "  [info]  $*"; }
 warn()    { echo "  [warn]  $*"; }
 fail()    { echo "  [error] $*" >&2; exit 1; }
 missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
+
+trap 'echo "" >&2; echo "  [error] Script failed on line $LINENO — see output above for details." >&2' ERR
 
 # Walk up the domain hierarchy looking for a Route 53 hosted zone.
 # e.g. keys.example.com → try example.com → try com
@@ -112,6 +114,9 @@ IDENTITY=$(aws_cmd sts get-caller-identity 2>&1) \
 ACCOUNT=$(echo "$IDENTITY" | jq -r '.Account')
 ARN=$(echo "$IDENTITY" | jq -r '.Arn')
 ok "Authenticated: $ARN (account $ACCOUNT)"
+
+[ -z "$REGION" ] && missing "--region"
+ok "Region: $REGION"
 
 echo "==> Resolving hosted zone"
 if [ -z "$HOSTED_ZONE_ID" ]; then
@@ -178,5 +183,4 @@ aws_cmd cloudformation describe-stacks \
 
 echo ""
 echo "DNS stack is live. Deploy the node with:"
-echo "  ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE \\"
-echo "    --key-name <KEY> --vpc-id <VPC> --subnet-id <SUBNET>"
+echo "  ./scripts/deploy-node.sh --domain $DOMAIN --profile $PROFILE --region $REGION --allow-all-domains"
