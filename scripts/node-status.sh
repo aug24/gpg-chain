@@ -28,6 +28,8 @@ EOF
 
 DOMAIN="" PROFILE="" STACK_PREFIX="gpgchain" REGION=""
 
+[[ $# -eq 0 ]] && { usage; exit 1; }
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --domain)       DOMAIN="$2";       shift 2 ;;
@@ -46,10 +48,11 @@ done
 DNS_STACK="${STACK_PREFIX}-dns"
 NODE_STACK="${STACK_PREFIX}-node"
 
-ok()   { echo "  [ok]      $*"; }
-info() { echo "  [info]    $*"; }
-warn() { echo "  [warn]    $*"; }
-fail() { echo "  [error]   $*" >&2; exit 1; }
+ok()      { echo "  [ok]      $*"; }
+info()    { echo "  [info]    $*"; }
+warn()    { echo "  [warn]    $*"; }
+fail()    { echo "  [error]   $*" >&2; exit 1; }
+missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
 row()  { printf "  %-18s %s\n" "$1" "$2"; }
 
 aws_cmd() {
@@ -76,8 +79,8 @@ stack_output() {
 # Checks
 # ---------------------------------------------------------------------------
 
-[ -z "$DOMAIN"  ] && { usage; exit 1; }
-[ -z "$PROFILE" ] && { usage; exit 1; }
+[ -z "$DOMAIN"  ] && missing "--domain"
+[ -z "$PROFILE" ] && missing "--profile"
 
 command -v aws  >/dev/null 2>&1 || fail "aws CLI not found"
 command -v jq   >/dev/null 2>&1 || fail "jq not found"

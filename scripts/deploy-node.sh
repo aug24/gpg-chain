@@ -42,6 +42,8 @@ STACK_PREFIX="gpgchain" INSTANCE_TYPE="t3.small"
 ALLOW_ALL_DOMAINS="false" ALLOWED_DOMAINS="" LETSENCRYPT_EMAIL=""
 BOOTSTRAP_PEERS="" SSH_CIDR="0.0.0.0/0" S3_BUCKET="" REGION=""
 
+[[ $# -eq 0 ]] && { usage; exit 1; }
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --domain)             DOMAIN="$2";             shift 2 ;;
@@ -73,10 +75,11 @@ TEMPLATE="$REPO_ROOT/deploy/cloudformation.yaml"
 DNS_STACK="${STACK_PREFIX}-dns"
 NODE_STACK="${STACK_PREFIX}-node"
 
-ok()   { echo "  [ok]    $*"; }
-info() { echo "  [info]  $*"; }
-warn() { echo "  [warn]  $*"; }
-fail() { echo "  [error] $*" >&2; exit 1; }
+ok()      { echo "  [ok]    $*"; }
+info()    { echo "  [info]  $*"; }
+warn()    { echo "  [warn]  $*"; }
+fail()    { echo "  [error] $*" >&2; exit 1; }
+missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
 
 aws_cmd() {
     local args=(--profile "$PROFILE")
@@ -97,13 +100,13 @@ ok "jq found"
 ok "Template: $TEMPLATE"
 
 echo "==> Checking required parameters"
-[ -z "$DOMAIN"    ] && fail "--domain is required"
-[ -z "$PROFILE"   ] && fail "--profile is required"
-[ -z "$KEY_NAME"  ] && fail "--key-name is required"
-[ -z "$VPC_ID"    ] && fail "--vpc-id is required"
-[ -z "$SUBNET_ID" ] && fail "--subnet-id is required"
+[ -z "$DOMAIN"    ] && missing "--domain"
+[ -z "$PROFILE"   ] && missing "--profile"
+[ -z "$KEY_NAME"  ] && missing "--key-name"
+[ -z "$VPC_ID"    ] && missing "--vpc-id"
+[ -z "$SUBNET_ID" ] && missing "--subnet-id"
 [ "$ALLOW_ALL_DOMAINS" = "false" ] && [ -z "$ALLOWED_DOMAINS" ] && \
-    fail "Provide --allowed-domains or --allow-all-domains"
+    { echo "" >&2; echo "Error: provide --allowed-domains DOMAINS or --allow-all-domains" >&2; echo "" >&2; usage >&2; exit 1; }
 ok "Domain:        $DOMAIN"
 ok "Key pair:      $KEY_NAME"
 ok "VPC:           $VPC_ID"

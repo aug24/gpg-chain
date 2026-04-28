@@ -10,14 +10,14 @@ set -euo pipefail
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --domain DOMAIN --hosted-zone-id ZONE_ID --profile PROFILE [options]
+Usage: $(basename "$0") --domain DOMAIN --profile PROFILE [options]
 
 Required:
-  --domain DOMAIN           FQDN for this node (e.g. demo.gpgchain.co.uk)
-  --hosted-zone-id ZONE_ID  Route 53 Hosted Zone ID (e.g. Z1PA6795UKMFR9)
+  --domain DOMAIN           FQDN for this node (e.g. keys.example.com)
   --profile PROFILE         AWS CLI profile name
 
 Optional:
+  --hosted-zone-id ZONE_ID  Route 53 Hosted Zone ID — looked up automatically if omitted
   --stack-prefix PREFIX     Stack name prefix (default: gpgchain)
   --ttl TTL                 DNS TTL in seconds (default: 300)
   --region REGION           AWS region (default: profile default)
@@ -31,6 +31,8 @@ EOF
 
 DOMAIN="" HOSTED_ZONE_ID="" PROFILE=""
 STACK_PREFIX="gpgchain" TTL="300" REGION=""
+
+[[ $# -eq 0 ]] && { usage; exit 1; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,10 +56,31 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE="$REPO_ROOT/deploy/dns.yaml"
 STACK_NAME="${STACK_PREFIX}-dns"
 
-ok()   { echo "  [ok]    $*"; }
-info() { echo "  [info]  $*"; }
-warn() { echo "  [warn]  $*"; }
-fail() { echo "  [error] $*" >&2; exit 1; }
+ok()      { echo "  [ok]    $*"; }
+info()    { echo "  [info]  $*"; }
+warn()    { echo "  [warn]  $*"; }
+fail()    { echo "  [error] $*" >&2; exit 1; }
+missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
+
+# Walk up the domain hierarchy looking for a Route 53 hosted zone.
+# e.g. keys.example.com → try example.com → try com
+lookup_hosted_zone() {
+    local domain="$1"
+    local candidate="${domain#*.}"   # strip first label to start one level up
+    while [[ "$candidate" == *.* ]]; do
+        local zone_id
+        zone_id=$(aws_cmd route53 list-hosted-zones-by-name \
+            --dns-name "${candidate}." \
+            --query "HostedZones[?Name=='${candidate}.'].Id | [0]" \
+            --output text 2>/dev/null)
+        if [ -n "$zone_id" ] && [ "$zone_id" != "None" ]; then
+            echo "${zone_id##*/}"   # strip /hostedzone/ prefix
+            return 0
+        fi
+        candidate="${candidate#*.}"
+    done
+    return 1
+}
 
 aws_cmd() {
     local args=(--profile "$PROFILE")
@@ -78,12 +101,10 @@ ok "jq found"
 ok "Template: $TEMPLATE"
 
 echo "==> Checking required parameters"
-[ -z "$DOMAIN"         ] && fail "--domain is required"
-[ -z "$HOSTED_ZONE_ID" ] && fail "--hosted-zone-id is required"
-[ -z "$PROFILE"        ] && fail "--profile is required"
-ok "Domain:         $DOMAIN"
-ok "Hosted zone ID: $HOSTED_ZONE_ID"
-ok "Profile:        $PROFILE"
+[ -z "$DOMAIN"  ] && missing "--domain"
+[ -z "$PROFILE" ] && missing "--profile"
+ok "Domain:  $DOMAIN"
+ok "Profile: $PROFILE"
 
 echo "==> Checking AWS credentials"
 IDENTITY=$(aws_cmd sts get-caller-identity 2>&1) \
@@ -92,11 +113,17 @@ ACCOUNT=$(echo "$IDENTITY" | jq -r '.Account')
 ARN=$(echo "$IDENTITY" | jq -r '.Arn')
 ok "Authenticated: $ARN (account $ACCOUNT)"
 
-echo "==> Validating AWS resources"
+echo "==> Resolving hosted zone"
+if [ -z "$HOSTED_ZONE_ID" ]; then
+    info "No --hosted-zone-id supplied — looking up from domain hierarchy..."
+    HOSTED_ZONE_ID=$(lookup_hosted_zone "$DOMAIN") \
+        || fail "Could not find a Route 53 hosted zone for any parent of '$DOMAIN'. Pass --hosted-zone-id explicitly."
+    ok "Found hosted zone: $HOSTED_ZONE_ID"
+fi
 ZONE=$(aws_cmd route53 get-hosted-zone --id "$HOSTED_ZONE_ID" 2>&1) \
     || fail "Hosted zone $HOSTED_ZONE_ID not found or not accessible"
 ZONE_NAME=$(echo "$ZONE" | jq -r '.HostedZone.Name')
-ok "Hosted zone $HOSTED_ZONE_ID found ($ZONE_NAME)"
+ok "Hosted zone $HOSTED_ZONE_ID ($ZONE_NAME)"
 
 EXISTING=$(aws_cmd route53 list-resource-record-sets \
     --hosted-zone-id "$HOSTED_ZONE_ID" \

@@ -33,6 +33,8 @@ EOF
 
 DOMAIN="" PROFILE="" STACK_PREFIX="gpgchain" REGION="" YES=false
 
+[[ $# -eq 0 ]] && { usage; exit 1; }
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --domain)       DOMAIN="$2";       shift 2 ;;
@@ -51,9 +53,10 @@ done
 
 NODE_STACK="${STACK_PREFIX}-node"
 
-ok()   { echo "  [ok]    $*"; }
-info() { echo "  [info]  $*"; }
-fail() { echo "  [error] $*" >&2; exit 1; }
+ok()      { echo "  [ok]    $*"; }
+info()    { echo "  [info]  $*"; }
+fail()    { echo "  [error] $*" >&2; exit 1; }
+missing() { echo "" >&2; echo "Error: $* is required" >&2; echo "" >&2; usage >&2; exit 1; }
 
 aws_cmd() {
     local args=(--profile "$PROFILE")
@@ -71,8 +74,8 @@ command -v jq  >/dev/null 2>&1 || fail "jq not found"
 ok "aws CLI and jq found"
 
 echo "==> Checking required parameters"
-[ -z "$DOMAIN"  ] && fail "--domain is required"
-[ -z "$PROFILE" ] && fail "--profile is required"
+[ -z "$DOMAIN"  ] && missing "--domain"
+[ -z "$PROFILE" ] && missing "--profile"
 ok "Domain:  $DOMAIN"
 ok "Profile: $PROFILE"
 

@@ -26,10 +26,12 @@ The DNS stack owns the Elastic IP and Route 53 record. The node stack owns the E
 
 ```bash
 ./scripts/deploy-dns.sh \
-    --domain demo.gpgchain.co.uk \
-    --hosted-zone-id Z1PA6795UKMFR9 \
+    --domain keys.example.com \
     --profile myprofile
 ```
+
+The script looks up the Route 53 hosted zone automatically by walking up the domain hierarchy.
+Pass `--hosted-zone-id` explicitly if the lookup fails or you have multiple zones for the same domain.
 
 This creates an Elastic IP and a Route 53 A record. Run once and leave it running.
 
@@ -98,8 +100,8 @@ All scripts accept `--help` for full flag documentation.
 | Flag | Required | Description |
 |---|---|---|
 | `--domain` | yes | FQDN for the node |
-| `--hosted-zone-id` | yes | Route 53 hosted zone ID |
 | `--profile` | yes | AWS CLI profile |
+| `--hosted-zone-id` | no | Route 53 hosted zone ID — looked up automatically if omitted |
 | `--ttl` | no | DNS TTL in seconds (default: 300) |
 | `--stack-prefix` | no | Stack name prefix (default: gpgchain) |
 | `--region` | no | AWS region (default: profile default) |
