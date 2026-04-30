@@ -5,11 +5,10 @@ Layout:
     <store_dir>/<fp[0:2]>/<fp[2:4]>/<fp>.sig.<sighash>.json
     <store_dir>/<fp[0:2]>/<fp[2:4]>/<fp>.revoke.json
 
-All writes are atomic: write to <path>.tmp then os.rename into place.
+All writes go directly to the target path (files are write-once; S3 PutObject is atomic).
 Reads go through a cachetools.LRUCache keyed by fingerprint.
 """
 import json
-import os
 import time
 from pathlib import Path
 
@@ -44,9 +43,7 @@ class DirStore:
         return self._block_dir(fingerprint) / f"{fingerprint}.revoke.json"
 
     def _atomic_write(self, path: Path, data: dict) -> None:
-        tmp_path = Path(str(path) + ".tmp")
-        tmp_path.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(tmp_path, path)
+        path.write_text(json.dumps(data), encoding="utf-8")
 
     # --- Store protocol ---
 

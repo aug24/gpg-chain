@@ -10,12 +10,12 @@ echo "    go build OK"
 
 echo "==> Installing Python implementation"
 cd "$ROOT/implementations/python"
-pip install -e . --quiet
+pip3 install -e . --quiet
 echo "    pip install OK"
 
 echo "==> Installing test dependencies"
 cd "$ROOT/tests"
-pip install -r requirements.txt --quiet
+pip3 install -r requirements.txt --quiet
 echo "    test deps OK"
 
 echo "==> Build complete"
